@@ -7,7 +7,10 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-6"
-TIMEOUT = 30.0
+TIMEOUT = 45.0
+
+# 마지막 분석 결과 캐시 (채팅 컨텍스트용)
+_analysis_cache: dict[str, dict] = {}
 
 SYSTEM_PROMPT = """당신은 한국 주식 시장의 세력 매매 패턴 분석 전문가입니다.
 제공된 데이터를 바탕으로 세력(기관·외국인·작전세력)의 매집 또는 분산 단계를 판단하고,
@@ -40,6 +43,23 @@ def _get_anthropic_client():
         return anthropic.AsyncAnthropic(api_key=real_key)
 
 
+def store_analysis_cache(ticker: str, detail: dict, ai_result: dict, disclosures: list):
+    """채팅 컨텍스트용 분석 결과 저장"""
+    _analysis_cache[ticker] = {
+        "ticker": ticker,
+        "name": detail.get("name", ticker),
+        "price": detail.get("price", 0),
+        "change_rate": detail.get("change_rate", 0),
+        "volume": detail.get("volume", 0),
+        "high52": detail.get("high52", 0),
+        "low52": detail.get("low52", 0),
+        "score": detail.get("score", {}),
+        "ai_analysis": ai_result,
+        "recent_disclosures": [d.get("report_nm", "") for d in (disclosures or [])[:5]],
+        "supply_summary": detail.get("supply", [])[-5:] if detail.get("supply") else [],
+    }
+
+
 async def analyze_stock(
     ticker: str,
     name: str,
@@ -50,33 +70,28 @@ async def analyze_stock(
     disclosures: Optional[list] = None,
 ) -> dict:
     score = score_data.get("total", 0)
-    has_whale = whale_data and whale_data.get("level") not in (None, "")
-
-    if score < 5 and not has_whale:
-        return {
-            "종합점수": score,
-            "세력단계": "관망",
-            "신뢰도": "낮음",
-            "펌핑가능성": False,
-            "펌핑근거": "점수 미달",
-            "진입추천": False,
-            "리스크요인": ["세력 점수 낮음"],
-            "핵심근거": "AI 분석 조건 미충족 (점수 5 미만, 고래 신호 없음)",
-            "ai_called": False,
-        }
 
     user_content = f"""
 종목: {ticker} ({name})
-세력 점수: {score}/10 (등급: {score_data.get('grade', 'N/A')})
+세력 점수: {score:.1f}/10 (등급: {score_data.get('grade', 'N/A')})
 
-[점수 세부]
-{json.dumps(score_data.get('scores', {}), ensure_ascii=False)}
-
-[점수 사유]
-{json.dumps(score_data.get('reasons', {}), ensure_ascii=False)}
+[점수 세부 - 항목별 0~10점]
+거래량이상(A): {score_data.get('scores', {}).get('A', 0):.1f} — {score_data.get('reasons', {}).get('A', '')}
+가격/거래량괴리(B): {score_data.get('scores', {}).get('B', 0):.1f} — {score_data.get('reasons', {}).get('B', '')}
+수급신뢰도(C): {score_data.get('scores', {}).get('C', 0):.1f} — {score_data.get('reasons', {}).get('C', '')}
+기술지표(D): {score_data.get('scores', {}).get('D', 0):.1f} — {score_data.get('reasons', {}).get('D', '')}
+거래량프로파일(E): {score_data.get('scores', {}).get('E', 0):.1f} — {score_data.get('reasons', {}).get('E', '')}
+박스권돌파(F): {score_data.get('scores', {}).get('F', 0):.1f} — {score_data.get('reasons', {}).get('F', '')}
+업종모멘텀(G): {score_data.get('scores', {}).get('G', 0):.1f} — {score_data.get('reasons', {}).get('G', '')}
+고래신호(H): {score_data.get('scores', {}).get('H', 0):.1f} — {score_data.get('reasons', {}).get('H', '')}
 
 [가격 현황]
-{json.dumps(ohlcv_summary, ensure_ascii=False)}
+현재가: {ohlcv_summary.get('현재가', 'N/A')}원
+등락률: {ohlcv_summary.get('등락률', 0):+.2f}%
+52주 최고: {ohlcv_summary.get('52주고', 'N/A')}원
+52주 최저: {ohlcv_summary.get('52주저', 'N/A')}원
+최근 5일 종가: {ohlcv_summary.get('최근5일종가', [])}
+최근 5일 거래량: {ohlcv_summary.get('최근5일거래량', [])}
 
 [수급 현황]
 {json.dumps(supply_summary, ensure_ascii=False)}
@@ -147,17 +162,55 @@ async def chat_with_analyst(
     messages = []
     if history:
         for h in history[-6:]:
-            messages.append({"role": h["role"], "content": h["content"]})
+            if h.get("role") and h.get("content"):
+                messages.append({"role": h["role"], "content": h["content"]})
 
-    ctx_str = ""
+    # 컨텍스트 구성 — 마지막 분석 데이터를 최대한 활용
+    ctx_parts = []
     if context:
-        ctx_str = f"\n[현재 분석 종목 컨텍스트]\n{json.dumps(context, ensure_ascii=False)}\n"
+        ticker = str(context.get("ticker", "")).zfill(6)
+        cached = _analysis_cache.get(ticker)
+        if cached:
+            score = cached.get("score", {})
+            ai = cached.get("ai_analysis", {})
+            ctx_parts.append(f"""[현재 분석 종목]
+종목: {ticker} ({cached.get('name', ticker)})
+현재가: {cached.get('price', 0):,}원 ({cached.get('change_rate', 0):+.2f}%)
+52주 범위: {cached.get('low52', 0):,} ~ {cached.get('high52', 0):,}원
+거래량: {cached.get('volume', 0):,}주
+
+[세력 점수]
+종합: {score.get('total', 0):.1f}/10 (등급: {score.get('grade', 'N/A')})
+거래량이상: {score.get('scores', {}).get('A', 0):.1f} — {score.get('reasons', {}).get('A', '')}
+가격/거래량: {score.get('scores', {}).get('B', 0):.1f} — {score.get('reasons', {}).get('B', '')}
+수급신뢰도: {score.get('scores', {}).get('C', 0):.1f} — {score.get('reasons', {}).get('C', '')}
+기술지표: {score.get('scores', {}).get('D', 0):.1f} — {score.get('reasons', {}).get('D', '')}
+거래량프로파일: {score.get('scores', {}).get('E', 0):.1f} — {score.get('reasons', {}).get('E', '')}
+박스권돌파: {score.get('scores', {}).get('F', 0):.1f} — {score.get('reasons', {}).get('F', '')}
+
+[AI 분석 결과]
+세력단계: {ai.get('세력단계', 'N/A')}
+신뢰도: {ai.get('신뢰도', 'N/A')}
+펌핑가능성: {ai.get('펌핑가능성', False)}
+진입추천: {ai.get('진입추천', False)}
+핵심근거: {ai.get('핵심근거', 'N/A')}
+
+[최근 공시]
+{', '.join(cached.get('recent_disclosures', ['없음']))}""")
+        else:
+            ctx_parts.append(f"[현재 종목] {context.get('name', ticker)} ({ticker}) — 먼저 AI 분석 탭에서 분석을 실행하면 더 상세한 데이터가 제공됩니다.")
+
+    ctx_str = "\n".join(ctx_parts)
+    if ctx_str:
+        ctx_str = ctx_str + "\n\n"
 
     messages.append({"role": "user", "content": ctx_str + question})
 
     system = """당신은 한국 주식 시장 전문 AI 애널리스트입니다.
 세력 매매, 수급 분석, 기술적 분석, 공시 해석을 전문으로 합니다.
-한국어로 명확하고 간결하게 답변하십시오."""
+제공된 종목 데이터를 적극적으로 활용하여 구체적이고 실용적인 답변을 제공하십시오.
+한국어로 명확하고 간결하게 답변하되, 단락 구분을 명확히 하고 줄바꿈을 적절히 사용하십시오.
+데이터가 제공된 경우 반드시 그 데이터를 기반으로 분석하십시오."""
 
     try:
         client = _get_anthropic_client()
@@ -176,3 +229,120 @@ async def chat_with_analyst(
     except Exception as e:
         logger.error("채팅 오류: %s", e)
         return f"AI 응답 오류: {str(e)}"
+
+
+async def analyze_portfolio(positions: list[dict]) -> list[dict]:
+    """보유주 포트폴리오 AI 분석"""
+    results = []
+
+    for pos in positions:
+        ticker = str(pos.get("ticker", "")).zfill(6)
+        avg_price = float(pos.get("avg_price", 0))
+        quantity = int(pos.get("quantity", 0))
+
+        try:
+            from screening import get_stock_detail
+            from scoring import calculate_score
+
+            detail = await get_stock_detail(ticker)
+            if not detail:
+                results.append({
+                    "ticker": ticker,
+                    "name": ticker,
+                    "avg_price": avg_price,
+                    "current_price": 0,
+                    "quantity": quantity,
+                    "pnl_rate": 0,
+                    "pnl_amount": 0,
+                    "score": 0,
+                    "grade": "D",
+                    "recommendation": "조회불가",
+                    "reason": "데이터 조회 실패",
+                    "score_detail": {},
+                })
+                continue
+
+            current_price = detail["price"]
+            score_data = detail["score"]
+            score = score_data.get("total", 0)
+            grade = score_data.get("grade", "D")
+
+            pnl_rate = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+            pnl_amount = (current_price - avg_price) * quantity
+
+            # 추천 로직
+            recommendation, reason = _portfolio_recommendation(
+                pnl_rate=pnl_rate,
+                score=score,
+                score_data=score_data,
+            )
+
+            results.append({
+                "ticker": ticker,
+                "name": detail["name"],
+                "avg_price": avg_price,
+                "current_price": current_price,
+                "quantity": quantity,
+                "pnl_rate": round(pnl_rate, 2),
+                "pnl_amount": int(pnl_amount),
+                "score": score,
+                "grade": grade,
+                "recommendation": recommendation,
+                "reason": reason,
+                "score_detail": score_data,
+            })
+
+        except Exception as e:
+            logger.error("포트폴리오 분석 오류 %s: %s", ticker, e)
+            results.append({
+                "ticker": ticker,
+                "name": ticker,
+                "avg_price": avg_price,
+                "current_price": 0,
+                "quantity": quantity,
+                "pnl_rate": 0,
+                "pnl_amount": 0,
+                "score": 0,
+                "grade": "D",
+                "recommendation": "오류",
+                "reason": str(e),
+                "score_detail": {},
+            })
+
+    return results
+
+
+def _portfolio_recommendation(pnl_rate: float, score: float, score_data: dict) -> tuple[str, str]:
+    reasons = score_data.get("reasons", {})
+
+    if pnl_rate <= -15:
+        if score >= 5:
+            return "물타기 고려", f"손실 {pnl_rate:.1f}%이나 세력점수 {score:.1f}로 회복 가능성. 분할 매수 검토."
+        else:
+            return "손절 고려", f"손실 {pnl_rate:.1f}%에 세력점수 {score:.1f}로 추가 하락 위험. 손절 후 재진입 검토."
+    elif pnl_rate <= -8:
+        if score >= 6:
+            return "물타기 고려", f"손실 {pnl_rate:.1f}%이나 세력점수 {score:.1f}(매력적). 분할 물타기 적합."
+        elif score >= 4:
+            return "보유", f"손실 {pnl_rate:.1f}%, 세력점수 {score:.1f}. 추가 매수보다 보유 후 관망."
+        else:
+            return "손절 고려", f"손실 {pnl_rate:.1f}%에 세력점수 {score:.1f}로 회복 근거 부족."
+    elif pnl_rate <= -3:
+        if score >= 5:
+            return "추가매수 고려", f"소폭 손실({pnl_rate:.1f}%)에 세력점수 {score:.1f}. 단가 낮추기 유리."
+        else:
+            return "보유", f"손실 {pnl_rate:.1f}%. 세력점수 {score:.1f}로 지켜보기."
+    elif pnl_rate >= 25:
+        return "익절 고려", f"수익 {pnl_rate:.1f}%. 1/3~1/2 분할 익절 후 나머지 홀딩 전략."
+    elif pnl_rate >= 15:
+        if score >= 7:
+            return "홀딩 (추가 상승 기대)", f"수익 {pnl_rate:.1f}%에 세력점수 {score:.1f}(강함). 목표가까지 보유."
+        else:
+            return "일부 익절", f"수익 {pnl_rate:.1f}%. 세력점수 {score:.1f}로 보수적 익절 권장."
+    else:
+        if score >= 7:
+            return "추가매수 고려", f"수익 {pnl_rate:.1f}%에 세력점수 {score:.1f}(강함). 비중 확대 검토."
+        elif score >= 5:
+            return "보유", f"수익 {pnl_rate:.1f}%, 세력점수 {score:.1f}. 현 포지션 유지."
+        else:
+            return "보유 (주의)", f"수익 {pnl_rate:.1f}%이나 세력점수 {score:.1f}로 추가 매수 자제."

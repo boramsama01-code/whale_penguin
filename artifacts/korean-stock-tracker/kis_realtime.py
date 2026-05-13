@@ -21,7 +21,14 @@ _whale_accumulator: dict[str, dict] = defaultdict(lambda: {
     "last_reset": time.time(),
 })
 
-FOREIGN_BROKERS = {"모건스탠리", "골드만삭스", "JP모건", "메릴린치", "UBS", "씨티", "CLSA", "맥쿼리"}
+# 종목별 틱 거래량 통계 (상대적 이상거래량 감지용)
+_ticker_tick_stats: dict[str, dict] = defaultdict(lambda: {
+    "tick_count": 0,
+    "vol_sum": 0.0,
+    "vol_sq_sum": 0.0,
+    "avg_vol": 0.0,
+    "std_vol": 0.0,
+})
 
 RECONNECT_DELAY = 5
 MAX_RECONNECT = 10
@@ -41,7 +48,6 @@ def _parse_pipe_message(msg: str) -> Optional[dict]:
             return None
 
         tr_id = parts[1]
-        data_count = int(parts[2]) if parts[2].isdigit() else 1
         body = parts[3]
 
         if tr_id == "H0STCNT0":
@@ -68,18 +74,71 @@ def _parse_pipe_message(msg: str) -> Optional[dict]:
         return None
 
 
-def _classify_whale(amount: float) -> Optional[str]:
-    if amount >= 20_0000_0000:
-        return "LARGE"
-    elif amount >= 5_0000_0000:
-        return "MEDIUM"
-    elif amount >= 1_0000_0000:
-        return "SMALL"
-    return None
+def _update_tick_stats(ticker: str, volume: float):
+    """틱 거래량 통계 업데이트 (온라인 알고리즘)"""
+    stats = _ticker_tick_stats[ticker]
+    stats["tick_count"] += 1
+    n = stats["tick_count"]
+    old_avg = stats["avg_vol"]
+    stats["vol_sum"] += volume
+    stats["avg_vol"] = stats["vol_sum"] / n
+    # Welford's online variance
+    stats["vol_sq_sum"] += (volume - old_avg) * (volume - stats["avg_vol"])
+    if n > 1:
+        stats["std_vol"] = (stats["vol_sq_sum"] / (n - 1)) ** 0.5
+
+
+def _classify_whale_by_volume(ticker: str, volume: float, price: float) -> Optional[str]:
+    """
+    거래량 이상 기준 고래 분류 (절대 금액이 아닌 상대 거래량 기준)
+    - 틱 수가 충분히 쌓이면 z-score 기반
+    - 초기엔 절대 금액 기반 폴백
+    """
+    _update_tick_stats(ticker, volume)
+    stats = _ticker_tick_stats[ticker]
+    n = stats["tick_count"]
+
+    if n >= 20 and stats["avg_vol"] > 0:
+        avg = stats["avg_vol"]
+        std = stats["std_vol"] if stats["std_vol"] > 0 else avg * 0.5
+        z = (volume - avg) / std
+
+        # z-score 기반 분류
+        if z >= 8:
+            return "LARGE"
+        elif z >= 5:
+            return "MEDIUM"
+        elif z >= 3:
+            return "SMALL"
+        return None
+    else:
+        # 초기 틱 — 거래량 배율 기반 (첫 5틱은 건너뜀)
+        if n < 5:
+            return None
+        avg = stats["avg_vol"] if stats["avg_vol"] > 0 else 1
+        ratio = volume / avg
+        if ratio >= 20:
+            return "LARGE"
+        elif ratio >= 8:
+            return "MEDIUM"
+        elif ratio >= 4:
+            return "SMALL"
+
+        # 거래량 기반으로 판단 안 되면 절대 금액 폴백
+        amount = price * volume
+        if amount >= 50_000_000:
+            return "LARGE"
+        elif amount >= 10_000_000:
+            return "MEDIUM"
+        elif amount >= 3_000_000:
+            return "SMALL"
+        return None
 
 
 async def _process_execution(data: dict):
     ticker = data["ticker"]
+    volume = float(data["volume"])
+    price = data["price"]
     amount = data["amount"]
 
     now = time.time()
@@ -90,22 +149,26 @@ async def _process_execution(data: dict):
         acc["events"] = []
         acc["last_reset"] = now
 
-    level = _classify_whale(amount)
+    level = _classify_whale_by_volume(ticker, volume, price)
     if level:
         acc["total_amount"] += amount
-        acc["events"].append({"time": data["time"], "amount": amount, "level": level})
+        acc["events"].append({"time": data["time"], "amount": amount, "level": level, "volume": int(volume)})
 
-        is_emergency = acc["total_amount"] >= 50_0000_0000
+        is_emergency = acc["total_amount"] >= 500_000_000
 
         from startup_event import ticker_cache
         name = ticker_cache.get(ticker, ticker)
 
+        stats = _ticker_tick_stats[ticker]
+        vol_ratio = volume / stats["avg_vol"] if stats["avg_vol"] > 0 else 1.0
+
         event = {
             "ticker": ticker,
             "name": name,
-            "price": data["price"],
-            "volume": data["volume"],
+            "price": price,
+            "volume": int(volume),
             "amount": int(amount),
+            "vol_ratio": round(vol_ratio, 1),
             "level": "EMERGENCY" if is_emergency else level,
             "accumulated_5m": int(acc["total_amount"]),
             "is_emergency": is_emergency,

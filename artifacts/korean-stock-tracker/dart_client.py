@@ -13,18 +13,40 @@ logger = logging.getLogger(__name__)
 
 DART_BASE = "https://opendart.fss.or.kr/api"
 CORP_CODES_PATH = Path(__file__).parent / "cache" / "corp_codes.json"
+TICKER_NAMES_PATH = Path(__file__).parent / "cache" / "ticker_names.json"
 
-_corp_code_cache: dict[str, str] = {}
+_corp_code_cache: dict[str, str] = {}   # stock_code -> corp_code
+_ticker_name_cache: dict[str, str] = {}  # stock_code -> corp_name
 
 
 async def load_corp_codes():
-    global _corp_code_cache
+    global _corp_code_cache, _ticker_name_cache
+
+    # 네임 캐시 파일 먼저 로드
+    if TICKER_NAMES_PATH.exists():
+        try:
+            with open(TICKER_NAMES_PATH, "r", encoding="utf-8") as f:
+                _ticker_name_cache = json.load(f)
+            logger.info("ticker_names 캐시 로드: %d개", len(_ticker_name_cache))
+        except Exception as e:
+            logger.warning("ticker_names 캐시 읽기 실패: %s", e)
 
     if CORP_CODES_PATH.exists():
         try:
             with open(CORP_CODES_PATH, "r", encoding="utf-8") as f:
-                _corp_code_cache = json.load(f)
-            logger.info("DART corp codes 캐시 파일에서 로드: %d개", len(_corp_code_cache))
+                data = json.load(f)
+            # 구형 포맷 (ticker: corp_code) vs 신형 (ticker: {corp_code, name})
+            if data and isinstance(list(data.values())[0], str):
+                _corp_code_cache = data
+                logger.info("DART corp codes 캐시 로드: %d개", len(_corp_code_cache))
+                # 구형 포맷 → 이름 없음, 백그라운드에서 재다운로드
+                asyncio.create_task(_fetch_corp_codes())
+            else:
+                for ticker, val in data.items():
+                    _corp_code_cache[ticker] = val.get("corp_code", "")
+                    if val.get("name") and ticker not in _ticker_name_cache:
+                        _ticker_name_cache[ticker] = val["name"]
+                logger.info("DART corp codes(신형) 캐시 로드: %d개", len(_corp_code_cache))
             return
         except Exception as e:
             logger.warning("corp codes 캐시 파일 읽기 실패: %s", e)
@@ -33,14 +55,15 @@ async def load_corp_codes():
 
 
 async def _fetch_corp_codes():
-    global _corp_code_cache
+    global _corp_code_cache, _ticker_name_cache
     api_key = os.getenv("DART_API_KEY", "")
     if not api_key:
         logger.warning("DART_API_KEY 없음 — corp codes 미로드")
         return
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        logger.info("DART corpCode.xml 다운로드 중...")
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.get(
                 f"{DART_BASE}/corpCode.xml",
                 params={"crtfc_key": api_key},
@@ -53,21 +76,29 @@ async def _fetch_corp_codes():
             xml_content = zf.read(xml_name)
 
         root = ET.fromstring(xml_content)
-        codes: dict[str, str] = {}
+        corp_codes: dict[str, str] = {}
+        names: dict[str, str] = {}
+
         for item in root.findall(".//list"):
             corp_code = item.findtext("corp_code", "").strip()
             stock_code = item.findtext("stock_code", "").strip()
             corp_name = item.findtext("corp_name", "").strip()
             if stock_code and corp_code:
                 stock_code = str(stock_code).zfill(6)
-                codes[stock_code] = corp_code
+                corp_codes[stock_code] = corp_code
+                if corp_name:
+                    names[stock_code] = corp_name
 
-        _corp_code_cache = codes
+        _corp_code_cache = corp_codes
+        _ticker_name_cache.update(names)
+
         CORP_CODES_PATH.parent.mkdir(exist_ok=True)
         with open(CORP_CODES_PATH, "w", encoding="utf-8") as f:
-            json.dump(codes, f, ensure_ascii=False)
+            json.dump(corp_codes, f, ensure_ascii=False)
+        with open(TICKER_NAMES_PATH, "w", encoding="utf-8") as f:
+            json.dump(names, f, ensure_ascii=False)
 
-        logger.info("DART corp codes 로드 완료: %d개", len(codes))
+        logger.info("DART corp codes 다운로드 완료: %d개 (이름 %d개)", len(corp_codes), len(names))
 
     except Exception as e:
         logger.error("DART corp codes 로드 실패: %s", e)
@@ -76,6 +107,11 @@ async def _fetch_corp_codes():
 def get_corp_code(ticker: str) -> Optional[str]:
     ticker = str(ticker).zfill(6)
     return _corp_code_cache.get(ticker)
+
+
+def get_all_ticker_names() -> dict[str, str]:
+    """DART에서 로드된 ticker -> 회사명 딕셔너리 반환"""
+    return _ticker_name_cache
 
 
 async def get_disclosures(ticker: str, limit: int = 10) -> list[dict]:
@@ -132,7 +168,6 @@ async def get_disclosures(ticker: str, limit: int = 10) -> list[dict]:
 def _classify_disclosure(title: str) -> str:
     positive_keywords = ["자사주", "공급계약", "수주", "실적", "상향", "배당", "취득"]
     caution_keywords = ["유상증자", "전환사채", "CB발행", "최대주주변경", "CB", "BW"]
-
     for kw in positive_keywords:
         if kw in title:
             return "POSITIVE"

@@ -9,6 +9,12 @@ from startup_event import ticker_cache
 logger = logging.getLogger(__name__)
 
 
+def _recent_dates(days_back: int = 35) -> tuple[str, str]:
+    end = datetime.now().strftime("%Y%m%d")
+    start = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
+    return start, end
+
+
 async def get_ohlcv(ticker: str, days: int = 60) -> Optional[pd.DataFrame]:
     ticker = str(ticker).zfill(6)
     end = datetime.now().strftime("%Y%m%d")
@@ -23,7 +29,7 @@ async def get_ohlcv(ticker: str, days: int = 60) -> Optional[pd.DataFrame]:
         df.index = pd.to_datetime(df.index)
         return df.tail(days)
     except Exception as e:
-        logger.error("OHLCV 조회 오류 %s: %s", ticker, e)
+        logger.debug("OHLCV 조회 오류 %s: %s", ticker, e)
         return None
 
 
@@ -56,60 +62,58 @@ async def get_52week_range(ticker: str) -> tuple[float, float]:
         )
         if df is None or df.empty:
             return 0.0, 0.0
-        return float(df["저가"].min()), float(df["고가"].max())
+        low_col = "저가" if "저가" in df.columns else df.columns[2]
+        high_col = "고가" if "고가" in df.columns else df.columns[1]
+        return float(df[low_col].min()), float(df[high_col].max())
     except Exception:
         return 0.0, 0.0
 
 
-async def _check_single_ticker(ticker: str, date_str: str) -> Optional[dict]:
+def _get_col(df: pd.DataFrame, *names) -> str:
+    for n in names:
+        if n in df.columns:
+            return n
+    return df.columns[0]
+
+
+async def _check_single_ticker(ticker: str, ohlcv_start: str, ohlcv_end: str) -> Optional[dict]:
     ticker = str(ticker).zfill(6)
     try:
         from pykrx import stock as pykrx_stock
 
-        fundamental = await asyncio.to_thread(
-            pykrx_stock.get_market_cap_by_ticker, date_str, market="ALL"
-        )
-        if fundamental is None or ticker not in fundamental.index.astype(str).str.zfill(6).values:
-            return None
-
-        fundamental.index = fundamental.index.astype(str).str.zfill(6)
-        if ticker not in fundamental.index:
-            return None
-
-        row = fundamental.loc[ticker]
-        mktcap = float(row.get("시가총액", 0))
-
-        min_cap = 50_000_000_000
-        max_cap = 5_000_000_000_000
-        if not (min_cap <= mktcap <= max_cap):
-            return None
-
-        end = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=35)).strftime("%Y%m%d")
         ohlcv = await asyncio.to_thread(
-            pykrx_stock.get_market_ohlcv_by_date, start, end, ticker
+            pykrx_stock.get_market_ohlcv_by_date, ohlcv_start, ohlcv_end, ticker
         )
         if ohlcv is None or len(ohlcv) < 5:
             return None
 
-        vols = ohlcv["거래량"].values.astype(float)
-        amounts = ohlcv["거래대금"].values.astype(float)
+        vol_col = _get_col(ohlcv, "거래량", "Volume")
+        amt_col = _get_col(ohlcv, "거래대금", "Amount")
+        close_col = _get_col(ohlcv, "종가", "Close")
+
+        if vol_col not in ohlcv.columns or close_col not in ohlcv.columns:
+            return None
+
+        vols = ohlcv[vol_col].values.astype(float)
+        closes = ohlcv[close_col].values.astype(float)
 
         avg20 = np.mean(vols[-20:]) if len(vols) >= 20 else np.mean(vols)
         today_vol = vols[-1]
-        today_amount = amounts[-1]
 
-        if today_vol < avg20 * 2:
+        if avg20 <= 0 or today_vol < avg20 * 1.5:
             return None
-        if today_amount < 500_000_000:
+
+        if amt_col in ohlcv.columns:
+            today_amount = float(ohlcv[amt_col].values[-1])
+        else:
+            today_amount = today_vol * closes[-1]
+
+        if today_amount < 100_000_000:
             return None
 
         name = ticker_cache.get(ticker, ticker)
-        current_price = float(ohlcv["종가"].values[-1])
-        change_rate = float(
-            (ohlcv["종가"].values[-1] - ohlcv["종가"].values[-2])
-            / ohlcv["종가"].values[-2] * 100
-        ) if len(ohlcv) >= 2 else 0.0
+        current_price = float(closes[-1])
+        change_rate = float((closes[-1] - closes[-2]) / closes[-2] * 100) if len(closes) >= 2 else 0.0
 
         return {
             "ticker": ticker,
@@ -118,7 +122,7 @@ async def _check_single_ticker(ticker: str, date_str: str) -> Optional[dict]:
             "change_rate": round(change_rate, 2),
             "volume": int(today_vol),
             "amount": int(today_amount),
-            "mktcap": int(mktcap),
+            "mktcap": 0,
             "vol_ratio": round(today_vol / avg20, 2),
         }
 
@@ -127,37 +131,52 @@ async def _check_single_ticker(ticker: str, date_str: str) -> Optional[dict]:
         return None
 
 
-async def scan_market(max_results: int = 30) -> list[dict]:
+def _get_all_tickers() -> list[str]:
+    """
+    DART ticker_cache 기반으로 전체 종목 목록 반환.
+    pykrx get_market_ticker_list 는 KRX 서버 상태에 따라 실패하므로 사용 안 함.
+    """
+    tickers = list(ticker_cache.keys())
+    if len(tickers) < 50:
+        # 캐시가 너무 작으면 dart_client에서 직접 가져옴
+        try:
+            from dart_client import get_all_ticker_names
+            dart_names = get_all_ticker_names()
+            if dart_names:
+                ticker_cache.update(dart_names)
+                tickers = list(ticker_cache.keys())
+        except Exception:
+            pass
+    return tickers
+
+
+async def scan_market(max_results: int = 50) -> list[dict]:
     try:
-        from pykrx import stock as pykrx_stock
+        start_str, end_str = _recent_dates(35)
+        tickers = _get_all_tickers()
+        logger.info("시장 스캔 시작: %d개 종목", len(tickers))
 
-        date_str = datetime.now().strftime("%Y%m%d")
-        logger.info("시장 스캔 시작...")
+        if len(tickers) < 10:
+            logger.warning("종목 캐시 부족 — 스캔 불가")
+            return []
 
-        tickers_raw = await asyncio.to_thread(
-            pykrx_stock.get_market_ticker_list, market="ALL"
-        )
-        tickers = [str(t).zfill(6) for t in tickers_raw]
-
-        logger.info("전체 종목 수: %d개", len(tickers))
-
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(8)
 
         async def safe_check(t):
             async with semaphore:
-                return await _check_single_ticker(t, date_str)
+                return await _check_single_ticker(t, start_str, end_str)
 
         results = []
-        batch_size = 50
-        for i in range(0, min(len(tickers), 500), batch_size):
+        batch_size = 80
+        for i in range(0, len(tickers), batch_size):
             batch = tickers[i:i + batch_size]
             batch_results = await asyncio.gather(*[safe_check(t) for t in batch], return_exceptions=True)
             for r in batch_results:
                 if isinstance(r, dict):
                     results.append(r)
-            if len(results) >= max_results * 2:
+            if len(results) >= max_results * 3:
                 break
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.3)
 
         results.sort(key=lambda x: x.get("vol_ratio", 0), reverse=True)
 
@@ -179,7 +198,6 @@ async def scan_market(max_results: int = 30) -> list[dict]:
             except Exception:
                 item["score"] = 0.0
                 item["grade"] = "D"
-
             final.append(item)
 
         final.sort(key=lambda x: x.get("score", 0), reverse=True)
@@ -195,15 +213,43 @@ async def get_stock_detail(ticker: str) -> Optional[dict]:
     ticker = str(ticker).zfill(6)
     name = ticker_cache.get(ticker, ticker)
 
+    # 이름이 코드 그대로면 pykrx/DART로 조회
+    if name == ticker:
+        try:
+            from pykrx import stock as pykrx_stock
+            fetched = await asyncio.to_thread(pykrx_stock.get_market_ticker_name, ticker)
+            if fetched:
+                name = fetched
+                ticker_cache[ticker] = name
+        except Exception:
+            pass
+
+        if name == ticker:
+            try:
+                from dart_client import get_all_ticker_names
+                dart_names = get_all_ticker_names()
+                if ticker in dart_names:
+                    name = dart_names[ticker]
+                    ticker_cache[ticker] = name
+            except Exception:
+                pass
+
     ohlcv = await get_ohlcv(ticker, 60)
     supply = await get_supply(ticker, 20)
     low52, high52 = await get_52week_range(ticker)
 
-    if ohlcv is None:
+    if ohlcv is None or ohlcv.empty:
+        logger.warning("OHLCV 없음 %s", ticker)
         return None
 
-    closes = ohlcv["종가"].values.astype(float)
-    vols = ohlcv["거래량"].values.astype(float)
+    close_col = _get_col(ohlcv, "종가", "Close")
+    vol_col = _get_col(ohlcv, "거래량", "Volume")
+    open_col = _get_col(ohlcv, "시가", "Open")
+    high_col = _get_col(ohlcv, "고가", "High")
+    low_col = _get_col(ohlcv, "저가", "Low")
+
+    closes = ohlcv[close_col].values.astype(float)
+    vols = ohlcv[vol_col].values.astype(float)
 
     current_price = float(closes[-1])
     change_rate = float((closes[-1] - closes[-2]) / closes[-2] * 100) if len(closes) >= 2 else 0.0
@@ -213,14 +259,17 @@ async def get_stock_detail(ticker: str) -> Optional[dict]:
 
     ohlcv_list = []
     for idx, row in ohlcv.tail(30).iterrows():
-        ohlcv_list.append({
-            "date": str(idx)[:10],
-            "open": float(row.get("시가", 0)),
-            "high": float(row.get("고가", 0)),
-            "low": float(row.get("저가", 0)),
-            "close": float(row.get("종가", 0)),
-            "volume": int(row.get("거래량", 0)),
-        })
+        try:
+            ohlcv_list.append({
+                "date": str(idx)[:10],
+                "open": float(row[open_col]),
+                "high": float(row[high_col]),
+                "low": float(row[low_col]),
+                "close": float(row[close_col]),
+                "volume": int(row[vol_col]),
+            })
+        except Exception:
+            pass
 
     supply_list = []
     if supply is not None and not supply.empty:
