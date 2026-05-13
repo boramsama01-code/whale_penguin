@@ -51,7 +51,10 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 async def root():
     html_path = os.path.join(static_dir, "index.html")
     with open(html_path, "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read())
+        html = f.read()
+    clerk_pk = os.getenv("CLERK_PUBLISHABLE_KEY", "")
+    html = html.replace("__CLERK_PK__", clerk_pk)
+    return HTMLResponse(content=html)
 
 
 @app.get("/api/search")
@@ -151,9 +154,54 @@ async def analyze_ticker(ticker: str):
         whale_summary = get_whale_summary()
         whale_data = whale_summary.get(ticker)
 
+        # 고래 신호(H)를 점수에 반영
+        if whale_data:
+            from scoring import calculate_score, score_whale_signal
+            ws, wr = score_whale_signal(whale_data)
+            detail["score"]["scores"]["H"] = ws
+            detail["score"]["reasons"]["H"] = wr
+            weights = detail["score"].get("weights", {"A":2,"B":1.5,"C":1.5,"D":1,"E":1,"F":2,"G":0.5,"H":2})
+            total_weight = sum(weights.values())
+            weighted_sum = sum(detail["score"]["scores"][k] * weights.get(k,1) for k in detail["score"]["scores"])
+            detail["score"]["total"] = round(weighted_sum / total_weight, 2)
+
+        # G 업종모멘텀: 코스피 대비 상대수익률 계산
+        market_change_20d = 0.0
+        try:
+            from pykrx import stock as pykrx_stock
+            from datetime import datetime as _dt, timedelta as _td
+            _end = _dt.now().strftime("%Y%m%d")
+            _start = (_dt.now() - _td(days=40)).strftime("%Y%m%d")
+            _kospi = await asyncio.wait_for(
+                asyncio.to_thread(pykrx_stock.get_index_ohlcv_by_date, _start, _end, "1001"),
+                timeout=5.0,
+            )
+            if _kospi is not None and len(_kospi) >= 20:
+                _cc = "종가" if "종가" in _kospi.columns else _kospi.columns[3]
+                market_change_20d = float((_kospi[_cc].values[-1] / _kospi[_cc].values[-20] - 1) * 100)
+        except Exception:
+            pass
+
+        # G 점수 재계산
+        if detail.get("ohlcv") and len(detail["ohlcv"]) >= 20:
+            import pandas as pd
+            from scoring import score_relative_momentum
+            _closes = [r["close"] for r in detail["ohlcv"]]
+            _odf = pd.DataFrame({"종가": _closes})
+            _gs, _gr = score_relative_momentum(_odf, market_change_20d)
+            detail["score"]["scores"]["G"] = _gs
+            detail["score"]["reasons"]["G"] = _gr
+            _weights = detail["score"].get("weights", {"A":2,"B":1.5,"C":1.5,"D":1,"E":1,"F":2,"G":0.5,"H":2})
+            _tw = sum(_weights.values())
+            _ws = sum(detail["score"]["scores"][k] * _weights.get(k,1) for k in detail["score"]["scores"])
+            detail["score"]["total"] = round(_ws / _tw, 2)
+            from scoring import _grade
+            detail["score"]["grade"] = _grade(detail["score"]["total"])
+
         ohlcv_summary = {}
         if detail.get("ohlcv"):
             recent = detail["ohlcv"][-5:]
+            all_ohlcv = detail["ohlcv"]
             ohlcv_summary = {
                 "최근5일종가": [r["close"] for r in recent],
                 "최근5일거래량": [r["volume"] for r in recent],
@@ -161,6 +209,13 @@ async def analyze_ticker(ticker: str):
                 "등락률": detail["change_rate"],
                 "52주고": detail["high52"],
                 "52주저": detail["low52"],
+                "총데이터일수": len(all_ohlcv),
+                "20일전종가": all_ohlcv[-20]["close"] if len(all_ohlcv) >= 20 else None,
+                "60일전종가": all_ohlcv[-60]["close"] if len(all_ohlcv) >= 60 else None,
+                "120일전종가": all_ohlcv[-120]["close"] if len(all_ohlcv) >= 120 else None,
+                "240일전종가": all_ohlcv[-240]["close"] if len(all_ohlcv) >= 240 else None,
+                "52주최저대비": round((detail["price"] - detail["low52"]) / max(detail["low52"],1) * 100, 1) if detail.get("low52") else None,
+                "52주최고대비": round((detail["price"] - detail["high52"]) / max(detail["high52"],1) * 100, 1) if detail.get("high52") else None,
             }
 
         supply_summary = {}
@@ -221,15 +276,69 @@ async def dart_disclosures(ticker: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+_breadth_cache: dict = {"data": {}, "ts": 0.0}
+
+
 @app.get("/api/market-status")
 async def market_status():
+    import datetime as _dt
     from market_filter import get_market_state, update_market_state
     try:
         await update_market_state()
     except Exception:
         pass
-    state = get_market_state()
-    return state
+    result = get_market_state()
+
+    # 시장 breadth (상승/하락/보합 종목 수) — 5분 캐시
+    now_ts = time.time()
+    if now_ts - _breadth_cache["ts"] > 300:
+        try:
+            from pykrx import stock as pykrx_stock
+            now_dt = _dt.datetime.now()
+            d = now_dt
+            for _ in range(7):
+                if d.weekday() < 5:
+                    break
+                d -= _dt.timedelta(days=1)
+            date_str = d.strftime("%Y%m%d")
+
+            async def _fetch_market(market_name: str):
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(pykrx_stock.get_market_ohlcv_by_ticker, date_str, market=market_name),
+                        timeout=20.0
+                    )
+                except Exception:
+                    return None
+
+            kospi_df, kosdaq_df = await asyncio.gather(
+                _fetch_market("KOSPI"), _fetch_market("KOSDAQ")
+            )
+
+            def _breadth(df):
+                if df is None or df.empty:
+                    return {"up": 0, "down": 0, "flat": 0}
+                chg_col = next((c for c in ["등락률"] if c in df.columns), None)
+                if not chg_col:
+                    return {"up": 0, "down": 0, "flat": 0}
+                chg = df[chg_col]
+                return {"up": int((chg > 0).sum()), "down": int((chg < 0).sum()), "flat": int((chg == 0).sum())}
+
+            _breadth_cache["data"] = {
+                "kospi": _breadth(kospi_df),
+                "kosdaq": _breadth(kosdaq_df),
+            }
+            _breadth_cache["ts"] = now_ts
+        except Exception as e:
+            logger.debug("breadth 조회 실패: %s", e)
+
+    bd = _breadth_cache.get("data", {})
+    if isinstance(result.get("kospi"), dict) and bd.get("kospi"):
+        result["kospi"].update(bd["kospi"])
+    if isinstance(result.get("kosdaq"), dict) and bd.get("kosdaq"):
+        result["kosdaq"].update(bd["kosdaq"])
+
+    return result
 
 
 @app.get("/api/whale/realtime")
@@ -268,6 +377,113 @@ async def whale_summary():
         })
     result.sort(key=lambda x: x["total_amount"], reverse=True)
     return {"summary": result, "count": len(result)}
+
+
+@app.get("/api/whale/daily")
+async def whale_daily():
+    import asyncio
+    import datetime as _dt
+    from kis_realtime import get_daily_whale_summary
+    from startup_event import ticker_cache
+
+    items = get_daily_whale_summary()
+    if items:
+        return {"items": items, "count": len(items), "source": "realtime", "timestamp": int(time.time() * 1000)}
+
+    # 실시간 데이터 없으면 pykrx 일별 데이터로 대체
+    try:
+        from pykrx import stock as pykrx_stock
+
+        now = _dt.datetime.now()
+        today_str = now.strftime("%Y%m%d")
+
+        def prev_biz_days(n):
+            days = []
+            d = now - _dt.timedelta(days=1)
+            while len(days) < n:
+                if d.weekday() < 5:
+                    days.append(d.strftime("%Y%m%d"))
+                d -= _dt.timedelta(days=1)
+            return days
+
+        prev_days = prev_biz_days(2)
+        yesterday_str = prev_days[0]
+
+        async def get_ohlcv(date):
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(pykrx_stock.get_market_ohlcv_by_ticker, date, market="ALL"),
+                    timeout=30.0
+                )
+            except Exception:
+                return None
+
+        today_df, yesterday_df = await asyncio.gather(
+            get_ohlcv(today_str),
+            get_ohlcv(yesterday_str)
+        )
+
+        if today_df is None or (hasattr(today_df, 'empty') and today_df.empty):
+            today_df = yesterday_df
+            yesterday_df = await get_ohlcv(prev_days[1]) if len(prev_days) > 1 else None
+
+        if today_df is None or (hasattr(today_df, 'empty') and today_df.empty):
+            return {"items": [], "count": 0, "source": "none", "timestamp": int(time.time() * 1000)}
+
+        vol_col = next((c for c in ['거래량', 'Volume'] if c in today_df.columns), None)
+        amt_col = next((c for c in ['거래대금'] if c in today_df.columns), None)
+        close_col = next((c for c in ['종가', 'Close'] if c in today_df.columns), None)
+        chg_col = next((c for c in ['등락률'] if c in today_df.columns), None)
+
+        results = []
+        for ticker_raw in today_df.index:
+            ticker = str(ticker_raw).zfill(6)
+            row = today_df.loc[ticker_raw]
+
+            vol = int(row[vol_col]) if vol_col else 0
+            amount = int(row[amt_col]) if amt_col else 0
+            close = int(row[close_col]) if close_col else 0
+            change_rate = float(row[chg_col]) if chg_col else 0.0
+
+            if amount < 500_000_000:
+                continue
+
+            vol_ratio = 1.0
+            if yesterday_df is not None and not yesterday_df.empty and ticker_raw in yesterday_df.index:
+                yd_row = yesterday_df.loc[ticker_raw]
+                yd_vol = int(yd_row[vol_col]) if vol_col and vol_col in yesterday_df.columns else 0
+                if yd_vol > 0:
+                    vol_ratio = round(vol / yd_vol, 1)
+
+            level = "SMALL"
+            if vol_ratio >= 10:
+                level = "EMERGENCY"
+            elif vol_ratio >= 5:
+                level = "LARGE"
+            elif vol_ratio >= 3:
+                level = "MEDIUM"
+
+            name = ticker_cache.get(ticker, ticker)
+            results.append({
+                "ticker": ticker,
+                "name": name,
+                "price": close,
+                "change_rate": change_rate,
+                "volume": vol,
+                "total_amount": amount,
+                "vol_ratio": vol_ratio,
+                "event_count": 0,
+                "top_level": level,
+                "first_seen": "09:00",
+                "last_seen": "15:30",
+            })
+
+        results.sort(key=lambda x: x["total_amount"], reverse=True)
+        return {"items": results[:30], "count": len(results), "source": "pykrx", "timestamp": int(time.time() * 1000)}
+
+    except Exception as e:
+        logger.error("whale_daily pykrx 오류: %s", e)
+        return {"items": [], "count": 0, "source": "error", "error": str(e), "timestamp": int(time.time() * 1000)}
 
 
 class ChatRequest(BaseModel):
@@ -362,6 +578,27 @@ async def update_settings(req: SettingsRequest):
 @app.get("/api/settings")
 async def get_settings():
     return _settings
+
+
+@app.get("/api/config")
+async def config():
+    return {
+        "clerk_publishable_key": os.getenv("CLERK_PUBLISHABLE_KEY", ""),
+    }
+
+
+@app.get("/api/news/{ticker}")
+async def stock_news(ticker: str):
+    ticker = str(ticker).zfill(6)
+    from startup_event import ticker_cache
+    name = ticker_cache.get(ticker, ticker)
+    try:
+        from news_client import get_stock_news
+        items = await asyncio.wait_for(get_stock_news(ticker, name, limit=6), timeout=10.0)
+        return {"ticker": ticker, "name": name, "items": items, "count": len(items)}
+    except Exception as e:
+        logger.error("뉴스 조회 오류 %s: %s", ticker, e)
+        return {"ticker": ticker, "name": name, "items": [], "count": 0}
 
 
 @app.get("/api/health")

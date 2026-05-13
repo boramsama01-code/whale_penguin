@@ -21,6 +21,18 @@ _whale_accumulator: dict[str, dict] = defaultdict(lambda: {
     "last_reset": time.time(),
 })
 
+# 오늘 하루 전체 고래 누적 (장 종료 후 조회용)
+_daily_whale: dict[str, dict] = defaultdict(lambda: {
+    "total_amount": 0,
+    "event_count": 0,
+    "levels": [],
+    "first_seen": None,
+    "last_seen": None,
+    "name": "",
+    "price": 0,
+})
+_daily_reset_date: str = ""
+
 # 종목별 틱 거래량 통계 (상대적 이상거래량 감지용)
 _ticker_tick_stats: dict[str, dict] = defaultdict(lambda: {
     "tick_count": 0,
@@ -135,6 +147,15 @@ def _classify_whale_by_volume(ticker: str, volume: float, price: float) -> Optio
         return None
 
 
+def _reset_daily_if_needed():
+    global _daily_reset_date
+    from datetime import datetime
+    today = datetime.now().strftime("%Y%m%d")
+    if _daily_reset_date != today:
+        _daily_whale.clear()
+        _daily_reset_date = today
+
+
 async def _process_execution(data: dict):
     ticker = data["ticker"]
     volume = float(data["volume"])
@@ -175,6 +196,18 @@ async def _process_execution(data: dict):
             "time": data["time"],
             "timestamp": int(now * 1000),
         }
+
+        # 일별 누적 업데이트
+        _reset_daily_if_needed()
+        d = _daily_whale[ticker]
+        d["total_amount"] += amount
+        d["event_count"] += 1
+        d["levels"].append(level)
+        d["name"] = name
+        d["price"] = price
+        if d["first_seen"] is None:
+            d["first_seen"] = data["time"]
+        d["last_seen"] = data["time"]
 
         try:
             _whale_queue.put_nowait(event)
@@ -343,3 +376,31 @@ def get_whale_summary() -> dict:
                 "last_reset": acc["last_reset"],
             }
     return summary
+
+
+def get_daily_whale_summary() -> list:
+    _reset_daily_if_needed()
+    result = []
+    for ticker, d in _daily_whale.items():
+        if d["total_amount"] <= 0:
+            continue
+        levels = d["levels"]
+        top_level = "SMALL"
+        if "EMERGENCY" in levels:
+            top_level = "EMERGENCY"
+        elif "LARGE" in levels:
+            top_level = "LARGE"
+        elif "MEDIUM" in levels:
+            top_level = "MEDIUM"
+        result.append({
+            "ticker": ticker,
+            "name": d["name"] or ticker,
+            "price": d["price"],
+            "total_amount": int(d["total_amount"]),
+            "event_count": d["event_count"],
+            "top_level": top_level,
+            "first_seen": d["first_seen"],
+            "last_seen": d["last_seen"],
+        })
+    result.sort(key=lambda x: x["total_amount"], reverse=True)
+    return result
