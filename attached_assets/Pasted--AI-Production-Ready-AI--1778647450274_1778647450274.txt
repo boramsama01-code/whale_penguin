@@ -1,0 +1,587 @@
+한국 주식 고래 추적 및 AI 세력 분석 통합 웹앱 (Production Ready)
+
+아래 요구사항을 엄격하게 준수하여 실제 배포 가능한 수준의 한국 주식 고래 추적 및 AI 세력 분석 웹앱을 완성하라.
+
+절대로 placeholder 코드나 mock 응답으로 구현하지 말 것.
+모든 API는 실제 동작 가능한 production-ready 코드로 작성할 것.
+파일 생략 금지.
+모든 import 포함.
+requirements.txt 반드시 생성.
+모든 예외처리 포함.
+모든 timeout 포함.
+모든 async/sync 충돌 방지.
+모든 종목코드는 반드시 문자열(str) 6자리로 처리할 것.
+
+[매우 중요] 필수 안정성 규칙
+1. 종목코드 처리 규칙 (절대 중요)
+
+모든 종목코드는 반드시 문자열(str) 6자리 유지.
+
+절대 int 변환 금지.
+
+반드시 아래 패턴 사용:
+
+ticker = str(ticker).zfill(6)
+
+pandas merge / dataframe 처리 시에도 반드시:
+
+.astype(str).str.zfill(6)
+
+강제 적용.
+
+예:
+
+"005930" 유지
+"5930" 절대 금지
+2. pykrx 비동기 블로킹 방지
+
+pykrx는 동기(sync) 라이브러리다.
+
+FastAPI async endpoint 내부에서 직접 호출 금지.
+
+반드시 아래 방식 사용:
+
+await asyncio.to_thread(...)
+
+또는:
+
+from starlette.concurrency import run_in_threadpool
+
+사용.
+
+이벤트 루프 블로킹 절대 금지.
+
+3. FastAPI 안정성 규칙
+
+반드시 포함:
+
+CORSMiddleware 전체 허용
+모든 외부 API timeout
+모든 API try-except
+SSE 연결 종료 처리
+websocket reconnect 처리
+startup/shutdown lifecycle 처리
+4. Anthropic JSON 응답 안정화
+
+Claude 응답은 markdown code block 제거 후 JSON parse 할 것.
+
+예:
+
+response_text = response_text.strip()
+
+if response_text.startswith("```"):
+    response_text = response_text.split("\n", 1)[1]
+    response_text = response_text.rsplit("```", 1)[0]
+
+JSONDecodeError 발생 시 fallback 처리 필수.
+
+5. DART corpCode.xml 처리
+
+corpCode.xml은 ZIP 압축 응답이다.
+
+반드시:
+
+zipfile 사용
+XML 파싱
+메모리 캐싱
+
+구현.
+
+6. KIS Rate Limit 방지
+
+거래원 조회 / 호가 조회는 캐싱 필수.
+
+동일 종목:
+
+최소 30초 캐싱
+
+필수.
+
+7. 정규장 시간 처리
+
+정규장:
+09:00 ~ 15:30
+
+이 시간에만 websocket 연결.
+
+장 종료 시:
+
+websocket 종료
+실시간 기능 OFF 표시
+환경변수 (Replit Secrets)
+
+ANTHROPIC_API_KEY=
+DART_API_KEY=
+KIS_APP_KEY=
+KIS_APP_SECRET=
+KIS_ACCOUNT_NO=
+KIS_ACCOUNT_SUFFIX=
+KIS_ENV=PROD
+
+절대 코드에 하드코딩 금지.
+반드시 os.getenv 사용.
+
+기술 스택
+
+백엔드:
+
+FastAPI
+uvicorn
+asyncio
+websockets
+aiohttp
+httpx
+
+데이터:
+
+pykrx
+pandas
+numpy
+
+AI:
+
+anthropic
+
+프론트:
+
+Vanilla JS
+TailwindCSS CDN
+Chart.js CDN
+FontAwesome CDN
+requirements.txt 생성
+
+반드시 아래 포함:
+
+fastapi
+uvicorn[standard]
+pykrx
+pandas
+numpy
+anthropic
+requests
+aiohttp
+websockets
+python-dotenv
+httpx
+sse-starlette
+lxml
+
+프로젝트 구조
+
+project/
+
+├── main.py
+├── startup_event.py
+├── kis_auth.py
+├── kis_realtime.py
+├── screening.py
+├── scoring.py
+├── dart_client.py
+├── claude_analyst.py
+├── strategy.py
+├── market_filter.py
+├── requirements.txt
+├── static/
+│ └── index.html
+└── cache/
+└── corp_codes.json
+
+startup_event.py
+
+앱 시작 시:
+
+pykrx 전체 종목 ticker/name 캐싱
+DART corp code 캐싱
+시장 상태 초기화
+
+ticker cache 형식:
+
+{
+"005930": "삼성전자"
+}
+
+메모리 캐싱 필수.
+
+kis_auth.py
+
+KIS OAuth 토큰 관리.
+
+URL:
+https://openapi.koreainvestment.com:9443/oauth2/tokenP
+
+body:
+
+{
+"grant_type": "client_credentials",
+"appkey": "...",
+"appsecret": "..."
+}
+
+요구사항:
+
+access token 메모리 캐싱
+만료 전 자동 갱신
+401 발생 시 자동 재발급 후 재시도
+asyncio background task 사용
+
+Approval Key 발급 함수도 구현.
+
+kis_realtime.py
+
+실시간 고래 감지 핵심 모듈.
+
+매우 중요
+
+KIS websocket 메시지는 JSON이 아니라
+pipe-delimited 문자열임.
+
+파싱 로직 정확히 구현.
+
+WebSocket 연결
+
+실전:
+ws://ops.koreainvestment.com:21000
+
+모의:
+ws://ops.koreainvestment.com:31000
+
+KIS_ENV 기반 자동 분기.
+
+Approval Key 발급 후 websocket 연결.
+
+실시간 체결 구독
+
+체결 stream:
+H0STCNT0
+
+종목별 subscribe 가능 구조 구현.
+
+고래 감지 규칙
+
+체결금액 = 체결가 × 체결량
+
+1억 이상 = SMALL
+5억 이상 = MEDIUM
+20억 이상 = LARGE
+긴급 경고
+
+동일 종목 5분 누적:
+50억 이상 = EMERGENCY ALERT
+
+추가 패턴 분석
+연속 매수 체결
+체결 집중도
+호가 상단 체결 비율
+외국계 창구 감지
+
+외국계 목록:
+
+모건스탠리
+골드만삭스
+JP모건
+메릴린치
+UBS
+씨티
+CLSA
+맥쿼리
+Queue + SSE
+
+asyncio.Queue 사용.
+
+반드시 generator wrapping:
+
+async def event_generator():
+    while True:
+        item = await queue.get()
+        yield {
+            "event": "whale",
+            "data": json.dumps(item)
+        }
+
+형태 사용.
+
+reconnect 규칙
+
+websocket disconnect 시:
+
+5초 후 reconnect
+최대 10회
+이후 graceful fail
+screening.py
+
+pykrx 기반 스캐너.
+
+모든 pykrx 호출은 asyncio.to_thread 사용.
+
+조건
+
+1차 필터:
+
+시총 500억~5000억
+거래량 20일 평균 대비 2배 이상
+거래대금 5억 이상
+관리종목 제외
+거래정지 제외
+
+수집:
+
+OHLCV 60일
+수급 20일
+52주 고저
+섹터
+scoring.py
+
+세력 점수 계산.
+
+반드시 함수 분리.
+
+각 항목별:
+
+개별 점수
+총점
+사유
+
+반환.
+
+점수 항목
+
+[A] 거래량 이상도
+[B] 가격-거래량 다이버전스
+[C] 수급 신뢰도
+[D] 기술지표
+[E] Volume Profile
+[F] 박스권 돌파
+[G] 업종 모멘텀
+[H] 실시간 고래 신호
+
+기술지표 구현
+
+직접 계산 구현:
+
+RSI
+MACD
+이동평균
+Bollinger Band
+
+ta-lib 의존 금지.
+
+dart_client.py
+
+OpenDART API 연동.
+
+corpCode.xml ZIP 다운로드 후 캐싱.
+
+최근 공시 조회 API 구현.
+
+공시 분류:
+
+긍정:
+
+자사주 취득
+공급계약
+실적상향
+
+주의:
+
+유상증자
+CB 발행
+최대주주 변경
+
+중립:
+
+일반공시
+claude_analyst.py
+
+Anthropic Claude Sonnet 사용.
+
+모델:
+claude-sonnet-4-20250514
+
+AI 호출 조건
+점수 7 이상
+고래 신호 존재
+
+일 때만 호출.
+
+Claude 응답은 반드시 JSON
+
+System Prompt:
+
+"당신은 한국 주식 시장의 세력 매매 패턴 분석 전문가입니다.
+제공된 데이터를 바탕으로 세력(기관·외국인·작전세력)의 매집 또는 분산 단계를 판단하고,
+반드시 JSON 형식으로만 응답하십시오."
+
+반환 형식
+
+{
+"종합점수": 0,
+"세력단계": "",
+"신뢰도": "",
+"팬더밍가능성": false,
+"팬더밍근거": "",
+"진입추천": false,
+"리스크요인": [],
+"핵심근거": ""
+}
+
+strategy.py
+
+자동 전략 생성.
+
+포함:
+
+진입가
+손절가
+목표가
+손익비
+포지션 사이징
+청산 규칙
+
+손익비 계산 포함.
+
+market_filter.py
+
+코스피/코스닥 상태 판단.
+
+MA20 상단 여부
+전략 ON/OFF
+
+반환.
+
+main.py
+
+FastAPI 메인 앱.
+
+반드시:
+
+CORS 허용
+static mount
+startup event 등록
+router 통합
+
+포함.
+
+API 엔드포인트
+
+GET /api/search?q=
+GET /api/scan
+GET /api/analyze/{ticker}
+GET /api/dart/{ticker}
+GET /api/market-status
+GET /api/whale/realtime
+GET /api/whale/summary
+GET /events
+POST /api/chat
+POST /api/settings
+
+static/index.html
+
+반드시 단일 SPA 구조.
+
+디자인 컨셉
+
+Terminal + Neon + Quant Dashboard
+
+스타일
+
+배경:
+bg-gray-950
+
+폰트:
+font-mono
+
+테두리:
+border border-gray-800 rounded-lg
+
+Neon 강조
+cyan
+lime
+pink
+red
+
+glow effect 적용.
+
+CDN
+
+반드시 아래 사용:
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+프론트 기능
+
+탭 1:
+실시간 고래 피드
+
+탭 2:
+종목 스캐너
+
+탭 3:
+종목 상세 + AI 분석
+
+탭 4:
+설정
+
+실시간 고래 UI
+
+SSE 연결 사용.
+
+고래 색상:
+
+SMALL = yellow
+MEDIUM = orange
+LARGE = red glow
+
+긴급 경고:
+flash banner 표시.
+
+종목 상세
+
+Chart.js 사용:
+
+점수 바 차트
+거래량 차트
+수급 차트
+AI 채팅 UI
+
+CLI 스타일 구현.
+
+입력창:
+
+_
+
+형태.
+
+에러 처리
+
+반드시 구현:
+
+websocket reconnect
+timeout
+fallback
+JSON parse fail
+pykrx fail retry
+DART fail continue
+Claude timeout 30초
+실행 조건
+
+아래 명령으로 즉시 실행 가능해야 함:
+
+uvicorn main --host 0.0.0.0 --port 8000 --reload
+
+브라우저:
+http://localhost:8000
+
+최종 목표
+
+단순 데모가 아니라 실제 사용 가능한 수준의:
+
+실시간 한국 주식 고래 추적기
+AI 세력 분석기
+세력 점수 스캐너
+자동 전략 도구
+
+를 구현할 것.
+
+UI는 전문 트레이딩 터미널처럼 세련되고 빠르게 동작해야 하며,
+버그 없이 전체 기능이 연결되어야 한다.
