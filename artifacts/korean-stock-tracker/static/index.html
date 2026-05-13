@@ -1,0 +1,940 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🐋 KRX 고래 추적기</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+  * { box-sizing: border-box; }
+  body { background: #030712; color: #e2e8f0; font-family: 'Courier New', monospace; }
+  .neon-cyan { color: #06b6d4; text-shadow: 0 0 8px #06b6d4, 0 0 20px rgba(6,182,212,0.4); }
+  .neon-lime { color: #84cc16; text-shadow: 0 0 8px #84cc16, 0 0 20px rgba(132,204,22,0.4); }
+  .neon-pink { color: #ec4899; text-shadow: 0 0 8px #ec4899, 0 0 20px rgba(236,72,153,0.4); }
+  .neon-red { color: #ef4444; text-shadow: 0 0 8px #ef4444, 0 0 20px rgba(239,68,68,0.4); }
+  .neon-yellow { color: #eab308; text-shadow: 0 0 8px #eab308; }
+  .glow-border-cyan { border: 1px solid #0e7490; box-shadow: 0 0 10px rgba(6,182,212,0.15), inset 0 0 10px rgba(6,182,212,0.03); }
+  .glow-border-lime { border: 1px solid #4d7c0f; box-shadow: 0 0 10px rgba(132,204,22,0.15); }
+  .tab-btn { transition: all 0.2s; }
+  .tab-btn.active { color: #06b6d4; border-bottom: 2px solid #06b6d4; }
+  .tab-btn:not(.active) { color: #64748b; }
+  .tab-btn:not(.active):hover { color: #94a3b8; }
+  .card { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; }
+  .whale-SMALL { border-left: 3px solid #eab308; }
+  .whale-MEDIUM { border-left: 3px solid #f97316; }
+  .whale-LARGE { border-left: 3px solid #ef4444; box-shadow: 0 0 15px rgba(239,68,68,0.2); }
+  .whale-EMERGENCY { border-left: 3px solid #ec4899; box-shadow: 0 0 20px rgba(236,72,153,0.4); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{ box-shadow: 0 0 20px rgba(236,72,153,0.4); } 50%{ box-shadow: 0 0 40px rgba(236,72,153,0.8); } }
+  .emergency-banner { background: linear-gradient(90deg, #7f1d1d, #831843); border: 1px solid #ec4899; animation: flashBanner 0.5s step-start infinite; }
+  @keyframes flashBanner { 0%{ opacity: 1; } 50%{ opacity: 0.6; } }
+  .score-bar { height: 6px; border-radius: 3px; transition: width 0.5s; }
+  .terminal-input { background: transparent; outline: none; caret-color: #06b6d4; }
+  .ticker-row { transition: background 0.15s; }
+  .ticker-row:hover { background: #1e293b; }
+  .spinner { border: 2px solid #1e293b; border-top: 2px solid #06b6d4; border-radius: 50%; width: 20px; height: 20px; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: #0f172a; }
+  ::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 2px; }
+  .grade-S { color: #ec4899; } .grade-A { color: #06b6d4; } .grade-B { color: #84cc16; }
+  .grade-C { color: #eab308; } .grade-D { color: #64748b; }
+  .positive { color: #22c55e; } .negative { color: #ef4444; } .neutral { color: #94a3b8; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- 헤더 -->
+<header class="sticky top-0 z-50 bg-gray-950 border-b border-gray-800">
+  <div class="max-w-screen-2xl mx-auto px-4 py-2 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <span class="text-2xl">🐋</span>
+      <span class="neon-cyan text-lg font-bold tracking-widest">KRX WHALE TRACKER</span>
+      <span class="text-xs text-gray-600 hidden sm:inline">/ AI 세력 분석기</span>
+    </div>
+    <div class="flex items-center gap-4 text-xs">
+      <div id="market-status-badge" class="flex items-center gap-1.5 px-2 py-1 rounded border border-gray-700">
+        <div id="market-dot" class="w-2 h-2 rounded-full bg-gray-600"></div>
+        <span id="market-label" class="text-gray-500">시장 로딩중</span>
+      </div>
+      <div id="ws-status" class="flex items-center gap-1.5 text-gray-600">
+        <i class="fas fa-circle text-xs text-gray-700"></i>
+        <span>SSE</span>
+      </div>
+      <div class="text-gray-600" id="clock">--:--:--</div>
+    </div>
+  </div>
+  <!-- 탭 -->
+  <div class="max-w-screen-2xl mx-auto px-4 flex gap-6 border-t border-gray-900">
+    <button class="tab-btn active py-2 text-sm font-mono" onclick="switchTab('whale')" id="tab-whale">
+      <i class="fas fa-water mr-1"></i>고래 피드
+    </button>
+    <button class="tab-btn py-2 text-sm font-mono" onclick="switchTab('scan')" id="tab-scan">
+      <i class="fas fa-radar mr-1"></i>종목 스캐너
+    </button>
+    <button class="tab-btn py-2 text-sm font-mono" onclick="switchTab('analyze')" id="tab-analyze">
+      <i class="fas fa-robot mr-1"></i>AI 분석
+    </button>
+    <button class="tab-btn py-2 text-sm font-mono" onclick="switchTab('settings')" id="tab-settings">
+      <i class="fas fa-sliders mr-1"></i>설정
+    </button>
+  </div>
+</header>
+
+<!-- 긴급 배너 -->
+<div id="emergency-banner" class="hidden emergency-banner px-4 py-2 text-center text-sm font-bold text-pink-300"></div>
+
+<!-- 메인 -->
+<main class="max-w-screen-2xl mx-auto px-4 py-4">
+
+  <!-- 탭1: 고래 피드 -->
+  <div id="tab-content-whale" class="tab-content">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <!-- 실시간 피드 -->
+      <div class="lg:col-span-2">
+        <div class="card p-4">
+          <div class="flex items-center justify-between mb-3">
+            <h2 class="neon-cyan text-sm font-bold"><i class="fas fa-bolt mr-2"></i>실시간 고래 체결</h2>
+            <div class="flex gap-2 text-xs">
+              <span class="px-2 py-0.5 rounded border border-yellow-800 text-yellow-500">SMALL 1억+</span>
+              <span class="px-2 py-0.5 rounded border border-orange-800 text-orange-500">MEDIUM 5억+</span>
+              <span class="px-2 py-0.5 rounded border border-red-800 text-red-500">LARGE 20억+</span>
+            </div>
+          </div>
+          <div id="whale-feed" class="space-y-2 max-h-[60vh] overflow-y-auto pr-1">
+            <div class="text-center text-gray-600 py-8 text-sm">
+              <div class="spinner mx-auto mb-3"></div>
+              <p>SSE 연결 중... 고래 신호 대기</p>
+              <p class="text-xs mt-1 text-gray-700">장 시간(09:00~15:30)에 실시간 데이터가 표시됩니다</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- 요약 패널 -->
+      <div class="space-y-4">
+        <div class="card p-4">
+          <h3 class="text-xs text-gray-500 mb-3 uppercase tracking-wider"><i class="fas fa-chart-bar mr-1"></i>5분 누적 고래</h3>
+          <div id="whale-summary" class="space-y-2 text-xs">
+            <p class="text-gray-600 text-center py-4">데이터 없음</p>
+          </div>
+        </div>
+        <div class="card p-4">
+          <h3 class="text-xs text-gray-500 mb-3 uppercase tracking-wider"><i class="fas fa-signal mr-1"></i>시장 현황</h3>
+          <div id="market-detail" class="text-xs space-y-2 text-gray-400">
+            <div class="flex justify-between"><span>KOSPI</span><span id="kospi-index" class="text-gray-600">--</span></div>
+            <div class="flex justify-between"><span>KOSDAQ</span><span id="kosdaq-index" class="text-gray-600">--</span></div>
+            <div class="flex justify-between"><span>전략</span><span id="strategy-status" class="text-gray-600">--</span></div>
+          </div>
+        </div>
+        <div class="card p-4">
+          <h3 class="text-xs text-gray-500 mb-2 uppercase tracking-wider">빠른 분석</h3>
+          <div class="flex gap-2">
+            <input id="quick-search" placeholder="종목코드/이름" class="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1.5 text-xs text-gray-300 outline-none focus:border-cyan-700" onkeydown="if(event.key==='Enter') quickAnalyze()">
+            <button onclick="quickAnalyze()" class="px-3 py-1.5 bg-cyan-900 border border-cyan-700 rounded text-xs neon-cyan hover:bg-cyan-800">GO</button>
+          </div>
+          <div id="quick-search-results" class="mt-2 space-y-1 text-xs hidden"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 탭2: 스캐너 -->
+  <div id="tab-content-scan" class="tab-content hidden">
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="neon-lime text-sm font-bold"><i class="fas fa-radar mr-2"></i>세력 스캐너</h2>
+        <div class="flex items-center gap-3">
+          <span class="text-xs text-gray-600">시총 500억~5000억 / 거래량 2배 이상</span>
+          <button id="scan-btn" onclick="runScan()" class="px-4 py-1.5 bg-lime-900 border border-lime-700 rounded text-xs neon-lime hover:bg-lime-800 flex items-center gap-2">
+            <i class="fas fa-play"></i><span>스캔 실행</span>
+          </button>
+        </div>
+      </div>
+      <div id="scan-status" class="hidden mb-3 flex items-center gap-2 text-xs text-gray-500">
+        <div class="spinner"></div>
+        <span>시장 전체 스캔 중... (최대 2분 소요)</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="text-gray-600 border-b border-gray-800">
+              <th class="text-left py-2 px-2">종목</th>
+              <th class="text-right py-2 px-2">현재가</th>
+              <th class="text-right py-2 px-2">등락률</th>
+              <th class="text-right py-2 px-2">거래량비</th>
+              <th class="text-right py-2 px-2">거래대금</th>
+              <th class="text-right py-2 px-2">시가총액</th>
+              <th class="text-center py-2 px-2">세력점수</th>
+              <th class="text-center py-2 px-2">등급</th>
+              <th class="text-center py-2 px-2">분석</th>
+            </tr>
+          </thead>
+          <tbody id="scan-table-body">
+            <tr>
+              <td colspan="9" class="text-center text-gray-600 py-12">
+                스캔 버튼을 눌러 세력 종목을 탐색하세요
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 탭3: AI 분석 -->
+  <div id="tab-content-analyze" class="tab-content hidden">
+    <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+      <!-- 분석 패널 -->
+      <div class="xl:col-span-2 space-y-4">
+        <!-- 검색 -->
+        <div class="card p-4">
+          <div class="flex gap-3">
+            <div class="relative flex-1">
+              <input id="analyze-input" placeholder="종목코드 또는 이름 검색..." class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-gray-300 outline-none focus:border-cyan-700" oninput="searchTicker(this.value)" onkeydown="if(event.key==='Enter') analyzeFromInput()">
+              <div id="search-dropdown" class="hidden absolute top-full left-0 right-0 z-10 bg-gray-900 border border-gray-700 rounded-b mt-0 max-h-48 overflow-y-auto"></div>
+            </div>
+            <button onclick="analyzeFromInput()" class="px-5 py-2 bg-cyan-900 border border-cyan-700 rounded text-sm neon-cyan hover:bg-cyan-800 font-bold">
+              <i class="fas fa-search mr-1"></i>분석
+            </button>
+          </div>
+        </div>
+
+        <!-- 분석 결과 -->
+        <div id="analyze-loading" class="hidden card p-8 text-center">
+          <div class="spinner mx-auto mb-3"></div>
+          <p class="text-gray-500 text-sm">AI 세력 분석 중...</p>
+        </div>
+
+        <div id="analyze-result" class="hidden space-y-4">
+          <!-- 헤더 -->
+          <div class="card p-4 glow-border-cyan">
+            <div class="flex items-start justify-between">
+              <div>
+                <div class="flex items-center gap-2">
+                  <span id="res-ticker" class="neon-cyan text-lg font-bold"></span>
+                  <span id="res-name" class="text-gray-400 text-sm"></span>
+                </div>
+                <div class="flex items-center gap-3 mt-1">
+                  <span id="res-price" class="text-2xl font-bold text-white"></span>
+                  <span id="res-change" class="text-sm"></span>
+                </div>
+              </div>
+              <div class="text-right">
+                <div class="text-xs text-gray-500">세력 점수</div>
+                <div id="res-score" class="text-3xl font-bold neon-cyan"></div>
+                <div id="res-grade" class="text-lg font-bold mt-0.5"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- AI 분석 -->
+          <div id="ai-analysis-card" class="card p-4">
+            <h3 class="text-xs text-gray-500 mb-3 uppercase tracking-wider"><i class="fas fa-robot mr-1"></i>AI 세력 분석</h3>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+              <div class="bg-gray-900 rounded p-2 text-center">
+                <div class="text-xs text-gray-600 mb-1">세력단계</div>
+                <div id="ai-stage" class="text-sm font-bold text-cyan-400">--</div>
+              </div>
+              <div class="bg-gray-900 rounded p-2 text-center">
+                <div class="text-xs text-gray-600 mb-1">신뢰도</div>
+                <div id="ai-confidence" class="text-sm font-bold">--</div>
+              </div>
+              <div class="bg-gray-900 rounded p-2 text-center">
+                <div class="text-xs text-gray-600 mb-1">펌핑가능성</div>
+                <div id="ai-pump" class="text-sm font-bold">--</div>
+              </div>
+              <div class="bg-gray-900 rounded p-2 text-center">
+                <div class="text-xs text-gray-600 mb-1">진입추천</div>
+                <div id="ai-entry" class="text-sm font-bold">--</div>
+              </div>
+            </div>
+            <div class="bg-gray-900 rounded p-3 text-xs text-gray-300 leading-relaxed">
+              <span class="text-gray-600">핵심근거: </span>
+              <span id="ai-reason">--</span>
+            </div>
+            <div id="ai-risks" class="mt-2 flex flex-wrap gap-1"></div>
+          </div>
+
+          <!-- 점수 차트 -->
+          <div class="card p-4">
+            <h3 class="text-xs text-gray-500 mb-3 uppercase tracking-wider"><i class="fas fa-chart-bar mr-1"></i>세력 점수 상세</h3>
+            <canvas id="score-chart" height="120"></canvas>
+          </div>
+
+          <!-- 전략 -->
+          <div id="strategy-card" class="card p-4">
+            <h3 class="text-xs text-gray-500 mb-3 uppercase tracking-wider"><i class="fas fa-crosshairs mr-1"></i>자동 매매 전략</h3>
+            <div id="strategy-content" class="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs"></div>
+            <div id="strategy-rules" class="mt-3 space-y-1 text-xs text-gray-500"></div>
+          </div>
+
+          <!-- 차트 -->
+          <div class="card p-4">
+            <h3 class="text-xs text-gray-500 mb-3 uppercase tracking-wider"><i class="fas fa-chart-line mr-1"></i>가격/거래량 차트</h3>
+            <canvas id="price-chart" height="120"></canvas>
+            <canvas id="volume-chart" height="60" class="mt-2"></canvas>
+          </div>
+
+          <!-- 공시 -->
+          <div class="card p-4">
+            <h3 class="text-xs text-gray-500 mb-3 uppercase tracking-wider"><i class="fas fa-file-alt mr-1"></i>최근 공시</h3>
+            <div id="disclosures-list" class="space-y-2"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI 채팅 -->
+      <div class="card flex flex-col" style="height: calc(100vh - 140px);">
+        <div class="p-3 border-b border-gray-800">
+          <h3 class="text-xs text-gray-500 uppercase tracking-wider"><i class="fas fa-terminal mr-1"></i>AI 애널리스트</h3>
+        </div>
+        <div id="chat-messages" class="flex-1 overflow-y-auto p-3 space-y-3 text-xs font-mono"></div>
+        <div class="p-3 border-t border-gray-800">
+          <div class="flex items-center gap-2 text-xs">
+            <span class="text-cyan-700 shrink-0">analyst@krx:~$</span>
+            <input id="chat-input" class="terminal-input flex-1 text-gray-300 text-xs" placeholder="질문 입력..." onkeydown="if(event.key==='Enter') sendChat()">
+            <button onclick="sendChat()" class="shrink-0 text-cyan-700 hover:text-cyan-400"><i class="fas fa-paper-plane"></i></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 탭4: 설정 -->
+  <div id="tab-content-settings" class="tab-content hidden">
+    <div class="max-w-2xl mx-auto space-y-4">
+      <div class="card p-6">
+        <h2 class="neon-cyan text-sm font-bold mb-4"><i class="fas fa-cog mr-2"></i>시스템 설정</h2>
+        <div class="space-y-4 text-sm">
+          <div>
+            <label class="text-gray-500 text-xs block mb-1">KIS 환경</label>
+            <select id="set-kis-env" class="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-gray-300 outline-none w-full">
+              <option value="PROD">실전 (PROD)</option>
+              <option value="TEST">모의 (TEST)</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-gray-500 text-xs block mb-1">고래 SMALL 임계값 (원)</label>
+            <input id="set-small" type="number" value="100000000" class="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-gray-300 outline-none w-full">
+          </div>
+          <div>
+            <label class="text-gray-500 text-xs block mb-1">고래 MEDIUM 임계값 (원)</label>
+            <input id="set-medium" type="number" value="500000000" class="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-gray-300 outline-none w-full">
+          </div>
+          <div>
+            <label class="text-gray-500 text-xs block mb-1">고래 LARGE 임계값 (원)</label>
+            <input id="set-large" type="number" value="2000000000" class="bg-gray-900 border border-gray-700 rounded px-3 py-2 text-gray-300 outline-none w-full">
+          </div>
+          <button onclick="saveSettings()" class="w-full py-2 bg-cyan-900 border border-cyan-700 rounded neon-cyan hover:bg-cyan-800">
+            <i class="fas fa-save mr-2"></i>설정 저장
+          </button>
+          <div id="settings-msg" class="text-xs text-center hidden"></div>
+        </div>
+      </div>
+      <div class="card p-6">
+        <h3 class="text-xs text-gray-500 mb-3 uppercase">API 상태</h3>
+        <div class="space-y-2 text-xs">
+          <div class="flex justify-between"><span class="text-gray-500">DART API</span><span id="dart-status" class="text-gray-600">--</span></div>
+          <div class="flex justify-between"><span class="text-gray-500">KIS API</span><span id="kis-status" class="text-gray-600">--</span></div>
+          <div class="flex justify-between"><span class="text-gray-500">AI (Anthropic)</span><span class="text-lime-500">Replit 통합 연결됨</span></div>
+        </div>
+        <button onclick="checkApiStatus()" class="mt-3 w-full py-1.5 border border-gray-700 rounded text-xs text-gray-500 hover:text-gray-300">상태 확인</button>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+// ===== STATE =====
+const state = {
+  currentTab: 'whale',
+  currentTicker: null,
+  chatHistory: [],
+  sseSource: null,
+  whaleCount: 0,
+  priceChart: null,
+  volumeChart: null,
+  scoreChart: null,
+};
+
+// ===== BASE URL =====
+const BASE = '';
+
+// ===== CLOCK =====
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('ko-KR');
+}, 1000);
+
+// ===== TAB SWITCHING =====
+function switchTab(name) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-content-' + name).classList.remove('hidden');
+  document.getElementById('tab-' + name).classList.add('active');
+  state.currentTab = name;
+}
+
+// ===== MARKET STATUS =====
+async function loadMarketStatus() {
+  try {
+    const res = await fetch(`${BASE}/api/market-status`);
+    const data = await res.json();
+    const dot = document.getElementById('market-dot');
+    const label = document.getElementById('market-label');
+    const isOpen = data.is_open;
+    dot.className = 'w-2 h-2 rounded-full ' + (isOpen ? 'bg-green-500 shadow-[0_0_6px_#22c55e]' : 'bg-gray-600');
+    label.textContent = isOpen ? '장 개장' : '장 마감';
+    label.className = isOpen ? 'text-green-400' : 'text-gray-500';
+
+    const kospi = data.kospi || {};
+    const kosdaq = data.kosdaq || {};
+    document.getElementById('kospi-index').textContent = kospi.index ? kospi.index.toLocaleString() : '--';
+    document.getElementById('kosdaq-index').textContent = kosdaq.index ? kosdaq.index.toLocaleString() : '--';
+    document.getElementById('strategy-status').textContent = data.strategy_on ? '✅ ON' : '⛔ OFF';
+    document.getElementById('strategy-status').className = data.strategy_on ? 'text-green-400' : 'text-red-400';
+  } catch(e) {}
+}
+loadMarketStatus();
+setInterval(loadMarketStatus, 60000);
+
+// ===== SSE WHALE FEED =====
+function connectSSE() {
+  if (state.sseSource) state.sseSource.close();
+  const wsStatus = document.getElementById('ws-status');
+  wsStatus.innerHTML = '<i class="fas fa-circle text-xs text-yellow-500"></i><span class="text-yellow-500">연결중</span>';
+
+  state.sseSource = new EventSource(`${BASE}/api/whale/realtime`);
+
+  state.sseSource.addEventListener('whale', e => {
+    const data = JSON.parse(e.data);
+    addWhaleFeedItem(data);
+  });
+
+  state.sseSource.addEventListener('heartbeat', e => {
+    wsStatus.innerHTML = '<i class="fas fa-circle text-xs text-green-500"></i><span class="text-green-500">연결됨</span>';
+  });
+
+  state.sseSource.addEventListener('error', e => {
+    wsStatus.innerHTML = '<i class="fas fa-circle text-xs text-red-500"></i><span class="text-red-500">재연결</span>';
+    setTimeout(connectSSE, 3000);
+  });
+
+  state.sseSource.onopen = () => {
+    wsStatus.innerHTML = '<i class="fas fa-circle text-xs text-green-500"></i><span class="text-green-500">연결됨</span>';
+    const feed = document.getElementById('whale-feed');
+    if (feed.querySelector('.spinner')) {
+      feed.innerHTML = '<div class="text-center text-gray-600 py-6 text-xs">고래 신호 대기 중...</div>';
+    }
+  };
+}
+connectSSE();
+
+function addWhaleFeedItem(data) {
+  const feed = document.getElementById('whale-feed');
+  // Remove placeholder
+  const placeholder = feed.querySelector('.text-center');
+  if (placeholder) feed.innerHTML = '';
+
+  if (data.is_emergency) {
+    showEmergencyBanner(data);
+  }
+
+  const amount = (data.amount / 1e8).toFixed(2);
+  const acc = (data.accumulated_5m / 1e8).toFixed(1);
+  const levelColor = {
+    'SMALL': 'text-yellow-400', 'MEDIUM': 'text-orange-400',
+    'LARGE': 'text-red-400', 'EMERGENCY': 'text-pink-400'
+  }[data.level] || 'text-gray-400';
+
+  const item = document.createElement('div');
+  item.className = `card p-3 whale-${data.level} cursor-pointer hover:brightness-110`;
+  item.onclick = () => { state.currentTicker = data.ticker; switchTab('analyze'); document.getElementById('analyze-input').value = data.ticker; analyzeFromInput(); };
+  item.innerHTML = `
+    <div class="flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <span class="${levelColor} font-bold text-xs w-20">${data.level}</span>
+        <div>
+          <span class="text-white text-sm font-bold">${data.name || data.ticker}</span>
+          <span class="text-gray-500 text-xs ml-1">${data.ticker}</span>
+        </div>
+      </div>
+      <div class="text-right">
+        <div class="${levelColor} font-bold">${amount}억</div>
+        <div class="text-gray-600 text-xs">${data.price?.toLocaleString()}원</div>
+      </div>
+    </div>
+    <div class="flex justify-between mt-1 text-xs text-gray-600">
+      <span>5분 누적: <span class="text-gray-400">${acc}억</span></span>
+      <span>${data.time || ''}</span>
+    </div>
+  `;
+
+  feed.insertBefore(item, feed.firstChild);
+  state.whaleCount++;
+
+  // Keep max 100 items
+  while (feed.children.length > 100) feed.removeChild(feed.lastChild);
+
+  // Refresh summary every 5 events
+  if (state.whaleCount % 5 === 0) loadWhaleSummary();
+}
+
+function showEmergencyBanner(data) {
+  const banner = document.getElementById('emergency-banner');
+  banner.textContent = `🚨 긴급 고래 경보! ${data.name}(${data.ticker}) 5분 누적 ${(data.accumulated_5m/1e8).toFixed(1)}억 돌파!`;
+  banner.classList.remove('hidden');
+  setTimeout(() => banner.classList.add('hidden'), 10000);
+}
+
+async function loadWhaleSummary() {
+  try {
+    const res = await fetch(`${BASE}/api/whale/summary`);
+    const data = await res.json();
+    const el = document.getElementById('whale-summary');
+    if (!data.summary?.length) {
+      el.innerHTML = '<p class="text-gray-600 text-center py-4 text-xs">5분 내 고래 없음</p>';
+      return;
+    }
+    el.innerHTML = data.summary.slice(0,8).map(s => `
+      <div class="flex justify-between items-center py-1 border-b border-gray-800 cursor-pointer hover:text-cyan-400"
+           onclick="quickAnalyzeByTicker('${s.ticker}')">
+        <span class="text-gray-400">${s.name}</span>
+        <span class="text-orange-400 font-bold">${(s.total_amount/1e8).toFixed(1)}억</span>
+      </div>
+    `).join('');
+  } catch(e) {}
+}
+setInterval(loadWhaleSummary, 30000);
+loadWhaleSummary();
+
+// ===== QUICK ANALYZE =====
+async function quickAnalyze() {
+  const q = document.getElementById('quick-search').value.trim();
+  if (!q) return;
+  const res = await fetch(`${BASE}/api/search?q=${encodeURIComponent(q)}`);
+  const data = await res.json();
+  const container = document.getElementById('quick-search-results');
+  if (!data.results?.length) { container.innerHTML = '<p class="text-gray-600">결과 없음</p>'; container.classList.remove('hidden'); return; }
+  container.classList.remove('hidden');
+  container.innerHTML = data.results.slice(0,5).map(r => `
+    <div class="flex justify-between items-center py-1 cursor-pointer hover:text-cyan-400 border-b border-gray-800"
+         onclick="quickAnalyzeByTicker('${r.ticker}')">
+      <span class="text-gray-300">${r.name}</span>
+      <span class="text-gray-600">${r.ticker}</span>
+    </div>
+  `).join('');
+}
+
+function quickAnalyzeByTicker(ticker) {
+  state.currentTicker = ticker;
+  document.getElementById('analyze-input').value = ticker;
+  switchTab('analyze');
+  analyzeFromInput();
+}
+
+// ===== SCANNER =====
+async function runScan() {
+  const btn = document.getElementById('scan-btn');
+  const status = document.getElementById('scan-status');
+  const tbody = document.getElementById('scan-table-body');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>스캔 중...</span>';
+  status.classList.remove('hidden');
+  tbody.innerHTML = '<tr><td colspan="9" class="text-center text-gray-600 py-12"><div class="spinner mx-auto mb-2"></div>스캔 중...</td></tr>';
+
+  try {
+    const res = await fetch(`${BASE}/api/scan`);
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+
+    if (!data.results?.length) {
+      tbody.innerHTML = '<tr><td colspan="9" class="text-center text-gray-600 py-12">스캔 결과 없음</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = data.results.map(r => {
+      const changeClass = r.change_rate > 0 ? 'positive' : r.change_rate < 0 ? 'negative' : 'neutral';
+      const changeSign = r.change_rate > 0 ? '+' : '';
+      return `
+        <tr class="ticker-row border-b border-gray-900 cursor-pointer" onclick="quickAnalyzeByTicker('${r.ticker}')">
+          <td class="py-2 px-2">
+            <div class="font-bold text-gray-200">${r.name}</div>
+            <div class="text-gray-600">${r.ticker}</div>
+          </td>
+          <td class="text-right py-2 px-2 text-white">${r.price?.toLocaleString()}원</td>
+          <td class="text-right py-2 px-2 ${changeClass}">${changeSign}${r.change_rate}%</td>
+          <td class="text-right py-2 px-2 text-orange-400">${r.vol_ratio}x</td>
+          <td class="text-right py-2 px-2 text-gray-400">${formatAmount(r.amount)}</td>
+          <td class="text-right py-2 px-2 text-gray-500">${formatAmount(r.mktcap)}</td>
+          <td class="text-center py-2 px-2">
+            <div class="flex items-center justify-center gap-1">
+              <div class="w-16 bg-gray-800 rounded-full h-1.5">
+                <div class="score-bar bg-cyan-500" style="width:${(r.score||0)*10}%"></div>
+              </div>
+              <span class="text-cyan-400 w-6">${(r.score||0).toFixed(1)}</span>
+            </div>
+          </td>
+          <td class="text-center py-2 px-2"><span class="grade-${r.grade} font-bold">${r.grade||'D'}</span></td>
+          <td class="text-center py-2 px-2">
+            <button onclick="event.stopPropagation(); quickAnalyzeByTicker('${r.ticker}')"
+              class="px-2 py-0.5 border border-cyan-800 rounded text-cyan-600 hover:text-cyan-400 text-xs">분석</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  } catch(e) {
+    tbody.innerHTML = `<tr><td colspan="9" class="text-center text-red-500 py-8">${e.message}</td></tr>`;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-play"></i><span>스캔 실행</span>';
+    status.classList.add('hidden');
+  }
+}
+
+// ===== TICKER SEARCH =====
+let searchTimeout = null;
+async function searchTicker(q) {
+  clearTimeout(searchTimeout);
+  const dd = document.getElementById('search-dropdown');
+  if (!q || q.length < 1) { dd.classList.add('hidden'); return; }
+  searchTimeout = setTimeout(async () => {
+    try {
+      const res = await fetch(`${BASE}/api/search?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      if (!data.results?.length) { dd.classList.add('hidden'); return; }
+      dd.classList.remove('hidden');
+      dd.innerHTML = data.results.slice(0,8).map(r => `
+        <div class="px-3 py-2 cursor-pointer hover:bg-gray-800 flex justify-between text-sm"
+             onclick="selectTicker('${r.ticker}', '${r.name}')">
+          <span class="text-gray-300">${r.name}</span>
+          <span class="text-gray-600">${r.ticker}</span>
+        </div>
+      `).join('');
+    } catch(e) {}
+  }, 300);
+}
+
+function selectTicker(ticker, name) {
+  document.getElementById('analyze-input').value = `${ticker} ${name}`;
+  document.getElementById('search-dropdown').classList.add('hidden');
+  state.currentTicker = ticker;
+}
+
+async function analyzeFromInput() {
+  const val = document.getElementById('analyze-input').value.trim();
+  if (!val) return;
+  document.getElementById('search-dropdown').classList.add('hidden');
+
+  // Extract ticker (6 digits)
+  const match = val.match(/\d{6}/);
+  let ticker = match ? match[0] : null;
+
+  if (!ticker) {
+    // Search by name
+    try {
+      const res = await fetch(`${BASE}/api/search?q=${encodeURIComponent(val)}`);
+      const data = await res.json();
+      if (data.results?.length) ticker = data.results[0].ticker;
+    } catch(e) {}
+  }
+
+  if (!ticker) { alert('종목을 찾을 수 없습니다.'); return; }
+  ticker = ticker.padStart(6, '0');
+  state.currentTicker = ticker;
+  await doAnalyze(ticker);
+}
+
+async function doAnalyze(ticker) {
+  document.getElementById('analyze-loading').classList.remove('hidden');
+  document.getElementById('analyze-result').classList.add('hidden');
+
+  try {
+    const res = await fetch(`${BASE}/api/analyze/${ticker}`);
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || '분석 실패');
+    }
+    const data = await res.json();
+    renderAnalysis(data);
+  } catch(e) {
+    document.getElementById('analyze-loading').classList.add('hidden');
+    alert(`분석 오류: ${e.message}`);
+  }
+}
+
+function renderAnalysis(data) {
+  document.getElementById('analyze-loading').classList.add('hidden');
+  document.getElementById('analyze-result').classList.remove('hidden');
+
+  const d = data.detail;
+  const ai = data.ai_analysis || {};
+  const strat = data.strategy || {};
+
+  document.getElementById('res-ticker').textContent = d.ticker;
+  document.getElementById('res-name').textContent = d.name;
+  document.getElementById('res-price').textContent = d.price?.toLocaleString() + '원';
+  const chg = d.change_rate || 0;
+  const chgEl = document.getElementById('res-change');
+  chgEl.textContent = (chg >= 0 ? '+' : '') + chg + '%';
+  chgEl.className = 'text-sm ' + (chg > 0 ? 'positive' : chg < 0 ? 'negative' : 'neutral');
+
+  const score = d.score?.total || 0;
+  document.getElementById('res-score').textContent = score.toFixed(1);
+  document.getElementById('res-grade').textContent = d.score?.grade || 'D';
+  document.getElementById('res-grade').className = 'text-lg font-bold mt-0.5 grade-' + (d.score?.grade || 'D');
+
+  // AI analysis
+  document.getElementById('ai-stage').textContent = ai['세력단계'] || '--';
+  const confEl = document.getElementById('ai-confidence');
+  confEl.textContent = ai['신뢰도'] || '--';
+  confEl.className = 'text-sm font-bold ' + (ai['신뢰도'] === '높음' ? 'text-green-400' : ai['신뢰도'] === '보통' ? 'text-yellow-400' : 'text-gray-500');
+  const pumpEl = document.getElementById('ai-pump');
+  pumpEl.textContent = ai['펌핑가능성'] ? '⚠️ 있음' : '없음';
+  pumpEl.className = 'text-sm font-bold ' + (ai['펌핑가능성'] ? 'text-red-400' : 'text-gray-500');
+  const entryEl = document.getElementById('ai-entry');
+  entryEl.textContent = ai['진입추천'] ? '✅ 추천' : '❌ 보류';
+  entryEl.className = 'text-sm font-bold ' + (ai['진입추천'] ? 'text-green-400' : 'text-red-400');
+  document.getElementById('ai-reason').textContent = ai['핵심근거'] || '--';
+
+  const risksEl = document.getElementById('ai-risks');
+  risksEl.innerHTML = (ai['리스크요인'] || []).map(r =>
+    `<span class="px-2 py-0.5 bg-red-950 border border-red-800 rounded text-red-400 text-xs">${r}</span>`
+  ).join('');
+
+  // Score chart
+  renderScoreChart(d.score);
+
+  // Strategy
+  renderStrategy(strat);
+
+  // Charts
+  renderPriceChart(d.ohlcv);
+
+  // Disclosures
+  const discList = document.getElementById('disclosures-list');
+  discList.innerHTML = (data.disclosures || []).length ? data.disclosures.map(disc => {
+    const color = disc.sentiment === 'POSITIVE' ? 'text-green-400 border-green-900' : disc.sentiment === 'CAUTION' ? 'text-red-400 border-red-900' : 'text-gray-500 border-gray-800';
+    return `<a href="${disc.url}" target="_blank" class="flex justify-between items-center py-1.5 px-2 border ${color} rounded hover:brightness-125 text-xs">
+      <span>${disc.report_nm}</span>
+      <span class="text-gray-600 ml-2 shrink-0">${disc.rcept_dt}</span>
+    </a>`;
+  }).join('') : '<p class="text-gray-600 text-xs">공시 없음</p>';
+
+  // Add chat context
+  addChatMessage('system', `${d.name}(${d.ticker}) 분석 완료. 세력점수 ${score.toFixed(1)}/10, ${ai['세력단계'] || '관망'} 단계.`);
+}
+
+function renderScoreChart(scoreData) {
+  if (!scoreData?.scores) return;
+  const ctx = document.getElementById('score-chart').getContext('2d');
+  if (state.scoreChart) state.scoreChart.destroy();
+
+  const labels = {
+    A: '거래량이상', B: '가격/거래량', C: '수급신뢰', D: '기술지표',
+    E: '거래량프로파일', F: '박스권돌파', G: '업종모멘텀', H: '고래신호'
+  };
+  const keys = Object.keys(scoreData.scores);
+  state.scoreChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: keys.map(k => labels[k] || k),
+      datasets: [{
+        data: keys.map(k => scoreData.scores[k]),
+        backgroundColor: keys.map(k => scoreData.scores[k] >= 7 ? 'rgba(236,72,153,0.7)' : scoreData.scores[k] >= 4 ? 'rgba(6,182,212,0.7)' : 'rgba(30,41,59,0.9)'),
+        borderColor: keys.map(k => scoreData.scores[k] >= 7 ? '#ec4899' : scoreData.scores[k] >= 4 ? '#06b6d4' : '#334155'),
+        borderWidth: 1,
+      }]
+    },
+    options: {
+      responsive: true, plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#64748b', font: { size: 9 } }, grid: { color: '#1e293b' } },
+        y: { min: 0, max: 10, ticks: { color: '#64748b', font: { size: 9 } }, grid: { color: '#1e293b' } }
+      }
+    }
+  });
+}
+
+function renderStrategy(strat) {
+  if (!strat || strat.error) return;
+  const el = document.getElementById('strategy-content');
+  const entry = strat.entry || {};
+  el.innerHTML = `
+    <div class="bg-gray-900 rounded p-2 text-center">
+      <div class="text-gray-600 text-xs mb-1">진입가</div>
+      <div class="text-cyan-400 font-bold">${entry.current?.toLocaleString()}원</div>
+      <div class="text-gray-600 text-xs">${entry.min?.toLocaleString()} ~ ${entry.max?.toLocaleString()}</div>
+    </div>
+    <div class="bg-gray-900 rounded p-2 text-center">
+      <div class="text-gray-600 text-xs mb-1">손절가</div>
+      <div class="text-red-400 font-bold">${strat.stop_loss?.toLocaleString()}원</div>
+      <div class="text-gray-600 text-xs">리스크 ${strat.risk_per_share?.toLocaleString()}원</div>
+    </div>
+    <div class="bg-gray-900 rounded p-2 text-center">
+      <div class="text-gray-600 text-xs mb-1">목표가</div>
+      <div class="text-green-400 font-bold">${strat.targets?.[0]?.toLocaleString()}원</div>
+      <div class="text-gray-600 text-xs">손익비 ${strat.rr_ratio}:1</div>
+    </div>
+    <div class="bg-gray-900 rounded p-2 text-center">
+      <div class="text-gray-600 text-xs mb-1">포지션</div>
+      <div class="text-yellow-400 font-bold">${strat.position?.size?.toLocaleString()}주</div>
+      <div class="text-gray-600 text-xs">${formatAmount(strat.position?.amount)}</div>
+    </div>
+  `;
+  const rules = document.getElementById('strategy-rules');
+  rules.innerHTML = (strat.liquidation_rules || []).map(r =>
+    `<div class="flex items-start gap-1"><span class="text-cyan-700 mt-0.5">›</span><span>${r}</span></div>`
+  ).join('');
+}
+
+function renderPriceChart(ohlcvData) {
+  if (!ohlcvData?.length) return;
+  const labels = ohlcvData.map(d => d.date.slice(5));
+  const closes = ohlcvData.map(d => d.close);
+  const volumes = ohlcvData.map(d => d.volume);
+
+  const pCtx = document.getElementById('price-chart').getContext('2d');
+  if (state.priceChart) state.priceChart.destroy();
+  state.priceChart = new Chart(pCtx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: closes, borderColor: '#06b6d4', borderWidth: 1.5,
+        fill: true, backgroundColor: 'rgba(6,182,212,0.05)', tension: 0.3, pointRadius: 0,
+      }]
+    },
+    options: {
+      responsive: true, plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#475569', font: { size: 8 }, maxTicksLimit: 10 }, grid: { color: '#1e293b' } },
+        y: { ticks: { color: '#475569', font: { size: 8 }, callback: v => v.toLocaleString() }, grid: { color: '#1e293b' } }
+      }
+    }
+  });
+
+  const vCtx = document.getElementById('volume-chart').getContext('2d');
+  if (state.volumeChart) state.volumeChart.destroy();
+  state.volumeChart = new Chart(vCtx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: volumes, backgroundColor: volumes.map((v, i) => closes[i] >= (closes[i-1] || closes[i]) ? 'rgba(6,182,212,0.6)' : 'rgba(239,68,68,0.6)'),
+      }]
+    },
+    options: {
+      responsive: true, plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#475569', font: { size: 8 }, maxTicksLimit: 10 }, grid: { color: '#1e293b' } },
+        y: { ticks: { color: '#475569', font: { size: 8 } }, grid: { color: '#1e293b' } }
+      }
+    }
+  });
+}
+
+// ===== CHAT =====
+function addChatMessage(role, content) {
+  const el = document.getElementById('chat-messages');
+  const isSystem = role === 'system';
+  const isUser = role === 'user';
+  const div = document.createElement('div');
+  div.className = isSystem ? 'text-gray-600 text-xs italic' : isUser ? 'text-cyan-400' : 'text-gray-300';
+  div.innerHTML = isSystem
+    ? `<span class="text-gray-700">// </span>${content}`
+    : isUser
+    ? `<span class="text-cyan-700">user@krx:~$ </span>${content}`
+    : `<span class="text-lime-700">&gt; </span>${content}`;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+  if (!isSystem) state.chatHistory.push({ role: role === 'user' ? 'user' : 'assistant', content });
+}
+
+async function sendChat() {
+  const input = document.getElementById('chat-input');
+  const q = input.value.trim();
+  if (!q) return;
+  input.value = '';
+  addChatMessage('user', q);
+
+  const thinkingDiv = document.createElement('div');
+  thinkingDiv.className = 'text-gray-600 text-xs italic';
+  thinkingDiv.textContent = '// 분석 중...';
+  document.getElementById('chat-messages').appendChild(thinkingDiv);
+
+  try {
+    const res = await fetch(`${BASE}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: q,
+        ticker: state.currentTicker,
+        history: state.chatHistory.slice(-6),
+      })
+    });
+    const data = await res.json();
+    thinkingDiv.remove();
+    addChatMessage('assistant', data.answer || '응답 없음');
+  } catch(e) {
+    thinkingDiv.remove();
+    addChatMessage('system', `오류: ${e.message}`);
+  }
+}
+
+// ===== SETTINGS =====
+async function loadSettings() {
+  try {
+    const res = await fetch(`${BASE}/api/settings`);
+    const s = await res.json();
+    document.getElementById('set-kis-env').value = s.kis_env || 'PROD';
+    document.getElementById('set-small').value = s.whale_small_threshold || 100000000;
+    document.getElementById('set-medium').value = s.whale_medium_threshold || 500000000;
+    document.getElementById('set-large').value = s.whale_large_threshold || 2000000000;
+  } catch(e) {}
+}
+
+async function saveSettings() {
+  const body = {
+    kis_env: document.getElementById('set-kis-env').value,
+    whale_small_threshold: +document.getElementById('set-small').value,
+    whale_medium_threshold: +document.getElementById('set-medium').value,
+    whale_large_threshold: +document.getElementById('set-large').value,
+  };
+  try {
+    const res = await fetch(`${BASE}/api/settings`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const msg = document.getElementById('settings-msg');
+    msg.textContent = '✅ 저장 완료';
+    msg.className = 'text-xs text-center text-green-400';
+    msg.classList.remove('hidden');
+    setTimeout(() => msg.classList.add('hidden'), 3000);
+  } catch(e) {}
+}
+
+async function checkApiStatus() {
+  try {
+    const res = await fetch(`${BASE}/api/health`);
+    const data = await res.json();
+    document.getElementById('kis-status').textContent = data.status === 'ok' ? '✅ 연결됨' : '❌ 오류';
+    document.getElementById('dart-status').textContent = '✅ 연결됨';
+  } catch(e) {
+    document.getElementById('kis-status').textContent = '❌ 오류';
+  }
+}
+
+// ===== UTILS =====
+function formatAmount(v) {
+  if (!v) return '--';
+  if (v >= 1e12) return (v/1e12).toFixed(1) + '조';
+  if (v >= 1e8) return (v/1e8).toFixed(0) + '억';
+  if (v >= 1e4) return (v/1e4).toFixed(0) + '만';
+  return v.toLocaleString();
+}
+
+// ===== INIT =====
+loadSettings();
+addChatMessage('system', 'KRX 고래 추적기 AI 애널리스트 시스템 준비 완료. 종목을 분석하거나 질문하세요.');
+</script>
+</body>
+</html>
