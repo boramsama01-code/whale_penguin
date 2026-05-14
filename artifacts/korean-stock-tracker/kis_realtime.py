@@ -301,6 +301,12 @@ async def _ws_loop():
         except websockets.exceptions.ConnectionClosed as e:
             logger.warning("WebSocket 연결 끊김: %s", e)
         except Exception as e:
+            err_str = str(e)
+            # 403 = WebSocket 실시간 권한 미신청 — 재시도 불필요
+            if "403" in err_str:
+                logger.warning("KIS WebSocket 권한 없음 (403) — REST 폴링 모드로 전환합니다. KIS Developers에서 실시간 시세 권한을 신청하세요.")
+                _ws_connection = None
+                return
             logger.error("WebSocket 오류: %s", e)
         finally:
             _ws_connection = None
@@ -312,7 +318,7 @@ async def _ws_loop():
             await asyncio.sleep(delay)
 
     if reconnect_count >= MAX_RECONNECT:
-        logger.error("최대 재연결 횟수 초과 — WebSocket 종료")
+        logger.warning("최대 재연결 횟수 초과 — REST 폴링 모드로 계속 실행됩니다.")
     _ws_connection = None
 
 

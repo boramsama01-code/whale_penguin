@@ -207,9 +207,12 @@ async def _scan_market_pykrx(max_results: int = 50) -> list[dict]:
 
         logger.info("세력 스캐너 (pykrx) — 기준일: %s", today_str)
 
+        async def _none():
+            return None
+
         today_df, yesterday_df = await asyncio.gather(
             _bulk_ohlcv_by_ticker(today_str),
-            _bulk_ohlcv_by_ticker(yesterday_str) if yesterday_str else asyncio.coroutine(lambda: None)()
+            _bulk_ohlcv_by_ticker(yesterday_str) if yesterday_str else _none()
         )
 
         if today_df is None or today_df.empty:
