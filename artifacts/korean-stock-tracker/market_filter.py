@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone, timedelta
 from typing import Optional
 import numpy as np
 
@@ -8,6 +8,7 @@ logger = logging.getLogger(__name__)
 
 MARKET_OPEN = dtime(9, 0)
 MARKET_CLOSE = dtime(15, 30)
+KST = timezone(timedelta(hours=9))
 
 _market_state: dict = {
     "is_open": False,
@@ -17,12 +18,15 @@ _market_state: dict = {
 }
 
 
+def now_kst() -> datetime:
+    return datetime.now(KST)
+
+
 def is_market_open() -> bool:
-    now = datetime.now().time()
-    weekday = datetime.now().weekday()
-    if weekday >= 5:
+    kst = now_kst()
+    if kst.weekday() >= 5:
         return False
-    return MARKET_OPEN <= now <= MARKET_CLOSE
+    return MARKET_OPEN <= kst.time() <= MARKET_CLOSE
 
 
 def get_market_state() -> dict:
@@ -39,8 +43,8 @@ async def update_market_state():
         from pykrx import stock as pykrx_stock
         from datetime import timedelta
 
-        end = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=60)).strftime("%Y%m%d")
+        end = now_kst().strftime("%Y%m%d")
+        start = (now_kst() - timedelta(days=60)).strftime("%Y%m%d")
 
         try:
             kospi_df = await asyncio.to_thread(

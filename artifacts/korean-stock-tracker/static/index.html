@@ -106,6 +106,22 @@
   #whale-spray { position: absolute; top: -14px; left: 50%; transform: translateX(-50%);
     pointer-events: none; font-size: 14px; opacity: 0; }
   .spray-on { animation: spray-fade 0.9s ease-out infinite; }
+
+  /* 숫자 입력 스피너 숨기기 */
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+
+  /* 탭별 고유 활성 색상 */
+  .tab-btn.active { border-bottom: 2px solid; }
+  #tab-whale.active  { color: #06b6d4; border-bottom-color: #06b6d4; }
+  #tab-scan.active   { color: #84cc16; border-bottom-color: #84cc16; }
+  #tab-analyze.active { color: #a855f7; border-bottom-color: #a855f7; }
+  #tab-portfolio.active { color: #ec4899; border-bottom-color: #ec4899; }
+
+  /* 가독성 개선: 다크 테마 보조 텍스트 밝기 향상 */
+  .text-gray-600 { color: #94a3b8 !important; }
+  .text-gray-700 { color: #64748b !important; }
 </style>
 </head>
 <body class="min-h-screen">
@@ -113,14 +129,14 @@
 <!-- 헤더 -->
 <header class="sticky top-0 z-50 bg-gray-950 border-b border-gray-800">
   <div class="max-w-screen-2xl mx-auto px-4 py-2 flex items-center justify-between">
-    <div class="flex items-center gap-3">
+    <div class="flex items-center gap-3 cursor-pointer select-none" onclick="switchTab('whale')" title="메인 피드로 이동">
       <span class="relative" style="width:32px;height:32px;display:inline-flex;align-items:center;justify-content:center;">
         <span id="whale-icon" class="text-2xl whale-state-default">🐳</span>
         <span id="whale-spray" class="text-sm">💦</span>
       </span>
       <div class="flex flex-col leading-tight">
         <span class="neon-cyan text-base font-bold tracking-widest">고래사냥</span>
-        <span class="text-gray-600 text-xs tracking-wider">WHALE WATCH</span>
+        <span class="text-gray-500 text-xs tracking-wider">WHALE WATCH</span>
       </div>
     </div>
     <div class="flex items-center gap-3 text-xs">
@@ -132,6 +148,10 @@
         <i class="fas fa-circle text-xs text-gray-700"></i><span>SSE</span>
       </div>
       <div class="text-gray-600" id="clock">--:--:--</div>
+      <!-- 설정 버튼 -->
+      <button onclick="openSettingsModal()" class="text-gray-500 hover:text-gray-300 px-1" title="설정">
+        <i class="fas fa-cog text-xs"></i>
+      </button>
       <!-- 유저 영역 -->
       <div id="user-area" class="flex items-center gap-2">
         <button id="login-btn" onclick="openLogin()" class="px-3 py-1 border border-gray-700 rounded text-gray-400 hover:text-gray-200 hover:border-gray-500 text-xs">
@@ -159,6 +179,27 @@
 
 <!-- 긴급 배너 -->
 <div id="emergency-banner" class="hidden emergency-banner px-4 py-2 text-center text-sm font-bold text-pink-300"></div>
+
+<!-- 설정 모달 -->
+<div id="settings-modal" class="fixed inset-0 z-[300] bg-black/80 hidden flex items-center justify-center">
+  <div class="card p-6 max-w-sm w-full mx-4">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="neon-cyan text-sm font-bold"><i class="fas fa-cog mr-2"></i>설정</h3>
+      <button onclick="closeSettingsModal()" class="text-gray-500 hover:text-gray-300"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="space-y-5">
+      <div>
+        <label class="text-xs text-gray-400 block mb-1.5"><i class="fas fa-robot mr-1 text-purple-500"></i>Anthropic API 키 (Claude AI 분석)</label>
+        <input id="anthropic-key-input" type="password" placeholder="sk-ant-api03-..." class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-gray-300 outline-none focus:border-purple-700 font-mono">
+        <p class="text-xs mt-1.5" id="anthropic-key-status">확인 중...</p>
+        <p class="text-xs text-gray-600 mt-1">키는 서버 메모리에만 저장되며 재시작 시 초기화됩니다.</p>
+      </div>
+      <button onclick="saveApiSettings()" class="w-full py-2 bg-cyan-900 border border-cyan-700 rounded text-sm neon-cyan hover:bg-cyan-800 font-bold">
+        <i class="fas fa-save mr-1"></i>저장
+      </button>
+    </div>
+  </div>
+</div>
 
 <!-- 닉네임 설정 모달 -->
 <div id="nickname-modal" class="fixed inset-0 z-[300] bg-black/80 hidden flex items-center justify-center">
@@ -621,9 +662,72 @@ function openLogin() {
   if (clerkInstance) {
     clerkInstance.openSignIn({});
   } else {
-    alert('인증 서비스 로딩 중입니다. 잠시 후 다시 시도해주세요.');
+    openNicknameModal();
   }
 }
+
+// ===== SETTINGS =====
+async function openSettingsModal() {
+  const modal = document.getElementById('settings-modal');
+  modal.classList.remove('hidden');
+  modal.style.display = 'flex';
+  await refreshAnthropicStatus();
+}
+
+function closeSettingsModal() {
+  document.getElementById('settings-modal').classList.add('hidden');
+  document.getElementById('settings-modal').style.display = '';
+}
+
+async function refreshAnthropicStatus() {
+  const statusEl = document.getElementById('anthropic-key-status');
+  if (!statusEl) return;
+  try {
+    const res = await fetch(`${BASE}/api/settings`);
+    const data = await res.json();
+    if (data.has_anthropic_key) {
+      statusEl.textContent = '✅ API 키 설정됨 — Claude AI 분석 활성화';
+      statusEl.className = 'text-xs text-green-400 mt-1.5';
+    } else {
+      statusEl.textContent = '⚠️ 미설정 — AI 분석이 제한됩니다. API 키를 입력하세요.';
+      statusEl.className = 'text-xs text-yellow-500 mt-1.5';
+    }
+  } catch(e) {
+    statusEl.textContent = '상태 확인 실패';
+    statusEl.className = 'text-xs text-red-400 mt-1.5';
+  }
+}
+
+async function saveApiSettings() {
+  const key = document.getElementById('anthropic-key-input').value.trim();
+  const statusEl = document.getElementById('anthropic-key-status');
+  if (!key) { closeSettingsModal(); return; }
+  statusEl.textContent = '저장 중...';
+  statusEl.className = 'text-xs text-gray-500 mt-1.5';
+  try {
+    const res = await fetch(`${BASE}/api/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ anthropic_api_key: key })
+    });
+    if (res.ok) {
+      document.getElementById('anthropic-key-input').value = '';
+      await refreshAnthropicStatus();
+      setTimeout(() => closeSettingsModal(), 1800);
+    } else {
+      throw new Error('저장 실패');
+    }
+  } catch(e) {
+    statusEl.textContent = '오류: ' + e.message;
+    statusEl.className = 'text-xs text-red-400 mt-1.5';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('settings-modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('settings-modal')) closeSettingsModal();
+  });
+});
 
 async function signOut() {
   if (clerkInstance) {
@@ -718,7 +822,11 @@ async function loadDailyWhale() {
     const res = await fetch(`${BASE}/api/whale/daily`);
     const data = await res.json();
     if (!data.items?.length) {
-      el.innerHTML = '<div class="text-center text-gray-600 py-8 text-xs">오늘 고래 출몰 기록 없음<br>장 시간 중 이상 체결 발생 시 표시됩니다</div>';
+      const isOpen = document.getElementById('market-dot')?.classList.contains('bg-green-400');
+      const msg = isOpen
+        ? '아직 오늘 고래 출몰 기록이 없습니다.<br>KIS API 연동 시 실시간 고래 체결이 기록됩니다.'
+        : '장 마감 후에는 실시간 기록이 없습니다.<br>장 시간(09:00~15:30)에 KIS API를 연동하면 표시됩니다.';
+      el.innerHTML = `<div class="text-center text-gray-500 py-8 text-xs">${msg}</div>`;
       return;
     }
     const LEVEL_COLOR = { SMALL: 'text-yellow-400', MEDIUM: 'text-orange-400', LARGE: 'text-red-400', EMERGENCY: 'text-pink-400' };
@@ -942,7 +1050,7 @@ function sortScan(col) {
 function renderScanTable(results) {
   const tbody = document.getElementById('scan-table-body');
   if (!results?.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-gray-600 py-12">결과 없음</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-gray-500 py-12">스캔 결과 없음<br><span class="text-xs text-gray-600">KRX 데이터는 장 시간(09:00~15:30 KST) 중 조회됩니다</span></td></tr>';
     return;
   }
   tbody.innerHTML = results.map(r => {

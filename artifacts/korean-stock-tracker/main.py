@@ -552,6 +552,7 @@ class SettingsRequest(BaseModel):
     whale_small_threshold: Optional[float] = None
     whale_medium_threshold: Optional[float] = None
     whale_large_threshold: Optional[float] = None
+    anthropic_api_key: Optional[str] = None
 
 
 _settings: dict = {
@@ -572,12 +573,20 @@ async def update_settings(req: SettingsRequest):
         _settings["whale_medium_threshold"] = req.whale_medium_threshold
     if req.whale_large_threshold is not None:
         _settings["whale_large_threshold"] = req.whale_large_threshold
+    if req.anthropic_api_key:
+        os.environ["ANTHROPIC_API_KEY"] = req.anthropic_api_key
+        _settings["has_anthropic_key"] = True
+        logger.info("Anthropic API 키가 런타임에 설정되었습니다")
     return {"success": True, "settings": _settings}
 
 
 @app.get("/api/settings")
 async def get_settings():
-    return _settings
+    result = dict(_settings)
+    result["has_anthropic_key"] = bool(
+        os.getenv("ANTHROPIC_API_KEY") or os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL")
+    )
+    return result
 
 
 @app.get("/api/config")
