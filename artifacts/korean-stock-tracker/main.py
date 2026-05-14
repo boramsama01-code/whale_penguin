@@ -536,6 +536,9 @@ class SettingsRequest(BaseModel):
     whale_medium_threshold: Optional[float] = None
     whale_large_threshold: Optional[float] = None
     anthropic_api_key: Optional[str] = None
+    kis_app_key: Optional[str] = None
+    kis_app_secret: Optional[str] = None
+    dart_api_key: Optional[str] = None
 
 
 _settings: dict = {
@@ -560,6 +563,29 @@ async def update_settings(req: SettingsRequest):
         os.environ["ANTHROPIC_API_KEY"] = req.anthropic_api_key
         _settings["has_anthropic_key"] = True
         logger.info("Anthropic API 키가 런타임에 설정되었습니다")
+    if req.kis_app_key:
+        os.environ["KIS_APP_KEY"] = req.kis_app_key
+        logger.info("KIS_APP_KEY가 런타임에 설정되었습니다")
+        # 토큰 캐시 초기화 (새 키로 재발급 유도)
+        try:
+            from kis_auth import _token_cache
+            _token_cache["access_token"] = None
+            _token_cache["expires_at"] = 0
+            _token_cache["approval_key"] = None
+        except Exception:
+            pass
+    if req.kis_app_secret:
+        os.environ["KIS_APP_SECRET"] = req.kis_app_secret
+        logger.info("KIS_APP_SECRET이 런타임에 설정되었습니다")
+    if req.dart_api_key:
+        os.environ["DART_API_KEY"] = req.dart_api_key
+        logger.info("DART_API_KEY가 런타임에 설정되었습니다")
+        # DART corp code 재로드 (백그라운드)
+        try:
+            from dart_client import _fetch_corp_codes
+            asyncio.create_task(_fetch_corp_codes())
+        except Exception:
+            pass
     return {"success": True, "settings": _settings}
 
 
@@ -569,6 +595,9 @@ async def get_settings():
     result["has_anthropic_key"] = bool(
         os.getenv("ANTHROPIC_API_KEY") or os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL")
     )
+    result["has_kis_key"] = bool(os.getenv("KIS_APP_KEY"))
+    result["has_kis_secret"] = bool(os.getenv("KIS_APP_SECRET"))
+    result["has_dart_key"] = bool(os.getenv("DART_API_KEY"))
     return result
 
 

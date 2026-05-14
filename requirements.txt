@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pykrx
+pandas
+numpy
+anthropic
+requests
+aiohttp
+websockets
+python-dotenv
+httpx
+sse-starlette
+lxml
+python-multipart

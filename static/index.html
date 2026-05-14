@@ -182,41 +182,21 @@
 
 <!-- 설정 모달 -->
 <div id="settings-modal" class="fixed inset-0 z-[300] bg-black/80 hidden flex items-center justify-center">
-  <div class="card p-6 max-w-sm w-full mx-4 max-h-[90vh] overflow-y-auto">
+  <div class="card p-6 max-w-sm w-full mx-4">
     <div class="flex justify-between items-center mb-4">
-      <h3 class="neon-cyan text-sm font-bold"><i class="fas fa-cog mr-2"></i>API 키 설정</h3>
+      <h3 class="neon-cyan text-sm font-bold"><i class="fas fa-cog mr-2"></i>설정</h3>
       <button onclick="closeSettingsModal()" class="text-gray-500 hover:text-gray-300"><i class="fas fa-times"></i></button>
     </div>
-    <p class="text-xs text-gray-600 mb-4">입력한 키는 서버에 적용되어 접속 중인 모든 사용자가 공유합니다.</p>
     <div class="space-y-5">
-      <!-- KIS App Key -->
-      <div>
-        <label class="text-xs text-gray-400 block mb-1.5"><i class="fas fa-key mr-1 text-cyan-500"></i>KIS Developers App Key</label>
-        <input id="kis-key-input" type="password" placeholder="PSxxxxxxxxxxxxxxxxxx..." class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-gray-300 outline-none focus:border-cyan-700 font-mono">
-        <p class="text-xs mt-1.5" id="kis-key-status">확인 중...</p>
-      </div>
-      <!-- KIS App Secret -->
-      <div>
-        <label class="text-xs text-gray-400 block mb-1.5"><i class="fas fa-lock mr-1 text-cyan-500"></i>KIS Developers App Secret</label>
-        <input id="kis-secret-input" type="password" placeholder="App Secret 입력..." class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-gray-300 outline-none focus:border-cyan-700 font-mono">
-        <p class="text-xs mt-1.5" id="kis-secret-status">확인 중...</p>
-      </div>
-      <!-- DART API Key -->
-      <div>
-        <label class="text-xs text-gray-400 block mb-1.5"><i class="fas fa-building mr-1 text-yellow-500"></i>OpenDart API 키 (공시 조회)</label>
-        <input id="dart-key-input" type="password" placeholder="OpenDart API 키 입력..." class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-gray-300 outline-none focus:border-yellow-700 font-mono">
-        <p class="text-xs mt-1.5" id="dart-key-status">확인 중...</p>
-      </div>
-      <!-- Anthropic API Key -->
       <div>
         <label class="text-xs text-gray-400 block mb-1.5"><i class="fas fa-robot mr-1 text-purple-500"></i>Anthropic API 키 (Claude AI 분석)</label>
         <input id="anthropic-key-input" type="password" placeholder="sk-ant-api03-..." class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-gray-300 outline-none focus:border-purple-700 font-mono">
         <p class="text-xs mt-1.5" id="anthropic-key-status">확인 중...</p>
+        <p class="text-xs text-gray-600 mt-1">키는 서버 메모리에만 저장되며 재시작 시 초기화됩니다.</p>
       </div>
       <button onclick="saveApiSettings()" class="w-full py-2 bg-cyan-900 border border-cyan-700 rounded text-sm neon-cyan hover:bg-cyan-800 font-bold">
         <i class="fas fa-save mr-1"></i>저장
       </button>
-      <p id="settings-save-msg" class="text-xs text-center hidden"></p>
     </div>
   </div>
 </div>
@@ -691,7 +671,7 @@ async function openSettingsModal() {
   const modal = document.getElementById('settings-modal');
   modal.classList.remove('hidden');
   modal.style.display = 'flex';
-  await refreshAllKeyStatuses();
+  await refreshAnthropicStatus();
 }
 
 function closeSettingsModal() {
@@ -699,74 +679,47 @@ function closeSettingsModal() {
   document.getElementById('settings-modal').style.display = '';
 }
 
-function _setKeyStatus(elId, isSet, setMsg, unsetMsg) {
-  const el = document.getElementById(elId);
-  if (!el) return;
-  if (isSet) {
-    el.textContent = '✅ ' + setMsg;
-    el.className = 'text-xs text-green-400 mt-1.5';
-  } else {
-    el.textContent = '⚠️ ' + unsetMsg;
-    el.className = 'text-xs text-yellow-500 mt-1.5';
-  }
-}
-
-async function refreshAllKeyStatuses() {
+async function refreshAnthropicStatus() {
+  const statusEl = document.getElementById('anthropic-key-status');
+  if (!statusEl) return;
   try {
     const res = await fetch(`${BASE}/api/settings`);
     const data = await res.json();
-    _setKeyStatus('kis-key-status',    data.has_kis_key,      '설정됨 — 실시간 고래 추적 활성화', '미설정 — KIS App Key를 입력하세요');
-    _setKeyStatus('kis-secret-status', data.has_kis_secret,   '설정됨', '미설정 — KIS App Secret을 입력하세요');
-    _setKeyStatus('dart-key-status',   data.has_dart_key,     '설정됨 — 공시 조회 활성화', '미설정 — OpenDart API 키를 입력하세요');
-    _setKeyStatus('anthropic-key-status', data.has_anthropic_key, '설정됨 — Claude AI 분석 활성화', 'AI 분석이 제한됩니다. API 키를 입력하세요');
+    if (data.has_anthropic_key) {
+      statusEl.textContent = '✅ API 키 설정됨 — Claude AI 분석 활성화';
+      statusEl.className = 'text-xs text-green-400 mt-1.5';
+    } else {
+      statusEl.textContent = '⚠️ 미설정 — AI 분석이 제한됩니다. API 키를 입력하세요.';
+      statusEl.className = 'text-xs text-yellow-500 mt-1.5';
+    }
   } catch(e) {
-    ['kis-key-status','kis-secret-status','dart-key-status','anthropic-key-status'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) { el.textContent = '상태 확인 실패'; el.className = 'text-xs text-red-400 mt-1.5'; }
-    });
+    statusEl.textContent = '상태 확인 실패';
+    statusEl.className = 'text-xs text-red-400 mt-1.5';
   }
 }
 
 async function saveApiSettings() {
-  const kisKey      = document.getElementById('kis-key-input').value.trim();
-  const kisSecret   = document.getElementById('kis-secret-input').value.trim();
-  const dartKey     = document.getElementById('dart-key-input').value.trim();
-  const anthropicKey = document.getElementById('anthropic-key-input').value.trim();
-
-  const payload = {};
-  if (kisKey)       payload.kis_app_key    = kisKey;
-  if (kisSecret)    payload.kis_app_secret  = kisSecret;
-  if (dartKey)      payload.dart_api_key    = dartKey;
-  if (anthropicKey) payload.anthropic_api_key = anthropicKey;
-
-  if (Object.keys(payload).length === 0) { closeSettingsModal(); return; }
-
-  const msgEl = document.getElementById('settings-save-msg');
-  msgEl.textContent = '저장 중...';
-  msgEl.className = 'text-xs text-center text-gray-400';
-  msgEl.classList.remove('hidden');
-
+  const key = document.getElementById('anthropic-key-input').value.trim();
+  const statusEl = document.getElementById('anthropic-key-status');
+  if (!key) { closeSettingsModal(); return; }
+  statusEl.textContent = '저장 중...';
+  statusEl.className = 'text-xs text-gray-500 mt-1.5';
   try {
     const res = await fetch(`${BASE}/api/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({ anthropic_api_key: key })
     });
     if (res.ok) {
-      ['kis-key-input','kis-secret-input','dart-key-input','anthropic-key-input'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.value = '';
-      });
-      await refreshAllKeyStatuses();
-      msgEl.textContent = '✅ 저장 완료 — 서버에 즉시 적용되었습니다';
-      msgEl.className = 'text-xs text-center text-green-400';
-      setTimeout(() => closeSettingsModal(), 2000);
+      document.getElementById('anthropic-key-input').value = '';
+      await refreshAnthropicStatus();
+      setTimeout(() => closeSettingsModal(), 1800);
     } else {
       throw new Error('저장 실패');
     }
   } catch(e) {
-    msgEl.textContent = '오류: ' + e.message;
-    msgEl.className = 'text-xs text-center text-red-400';
+    statusEl.textContent = '오류: ' + e.message;
+    statusEl.className = 'text-xs text-red-400 mt-1.5';
   }
 }
 
