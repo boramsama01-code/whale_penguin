@@ -16,6 +16,7 @@ PORT = "8000"
 run = "cd artifacts/korean-stock-tracker && python main.py"
 
 [services.production]
+deploymentTarget = "vm"
 
 [services.production.build]
 args = ["echo", "no build needed"]

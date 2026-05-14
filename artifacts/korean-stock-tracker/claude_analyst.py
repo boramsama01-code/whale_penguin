@@ -509,6 +509,59 @@ async def analyze_portfolio(positions: list[dict]) -> list[dict]:
     return results
 
 
+async def stream_market_summary(market_data: dict, whale_list: list):
+    """오늘 시장 흐름 AI 요약 — 스트리밍"""
+    from typing import AsyncGenerator
+    client = _get_anthropic_client()
+
+    kospi = market_data.get("kospi", {}) or {}
+    kosdaq = market_data.get("kosdaq", {}) or {}
+    is_open = market_data.get("is_open", False)
+
+    kospi_idx = kospi.get("index") or "N/A"
+    kospi_cr = float(kospi.get("change_rate") or 0)
+    kospi_up = int(kospi.get("up") or 0)
+    kospi_dn = int(kospi.get("down") or 0)
+
+    kosdaq_idx = kosdaq.get("index") or "N/A"
+    kosdaq_cr = float(kosdaq.get("change_rate") or 0)
+    kosdaq_up = int(kosdaq.get("up") or 0)
+    kosdaq_dn = int(kosdaq.get("down") or 0)
+
+    status = "장중" if is_open else "장마감"
+
+    if whale_list:
+        whale_lines = "\n".join(
+            f"- {w.get('name', w['ticker'])} ({w['ticker']}): {w['total_amount']/1e8:.1f}억원 [{w.get('top_level','SMALL')}]"
+            for w in whale_list[:5]
+        )
+    else:
+        whale_lines = "- 금일 고래 감지 없음"
+
+    prompt = f"""아래 데이터를 기반으로 오늘 한국 주식시장 현황을 간결하게 분석해주세요.
+
+[시장 현황 — {status}]
+• KOSPI {kospi_idx} ({kospi_cr:+.2f}%) — 상승 {kospi_up}/ 하락 {kospi_dn}종목
+• KOSDAQ {kosdaq_idx} ({kosdaq_cr:+.2f}%) — 상승 {kosdaq_up}/ 하락 {kosdaq_dn}종목
+
+[고래 출몰 현황 상위]
+{whale_lines}
+
+다음 세 가지를 포함하되 250자 이내로 자연스럽게 서술하세요. 불릿 포인트 없이 한 문단으로:
+1. 현재 시장 전반의 분위기 (리스크온/오프, 방향성, 강도)
+2. 고래 출몰 종목 중 주목할 만한 포인트 (있다면)
+3. 오늘 남은 시간 또는 내일을 위한 한 줄 전략"""
+
+    async with client.messages.stream(
+        model=MODEL,
+        max_tokens=400,
+        system="당신은 한국 주식시장 전문 AI 애널리스트입니다. 데이터를 간결하고 실용적으로 분석하며 핵심만 전달합니다.",
+        messages=[{"role": "user", "content": prompt}],
+    ) as stream:
+        async for text in stream.text_stream:
+            yield text
+
+
 def _portfolio_recommendation(pnl_rate: float, score: float, score_data: dict) -> tuple[str, str]:
     if pnl_rate <= -15:
         if score >= 5:

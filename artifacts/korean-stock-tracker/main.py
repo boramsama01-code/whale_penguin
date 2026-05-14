@@ -324,6 +324,44 @@ async def market_status():
     return result
 
 
+@app.get("/api/market-summary")
+async def market_summary_stream(request: Request):
+    from claude_analyst import stream_market_summary
+    from fastapi.responses import StreamingResponse
+
+    from market_filter import get_market_state, update_market_state
+    try:
+        await update_market_state()
+    except Exception:
+        pass
+    market_data = get_market_state()
+
+    from kis_realtime import get_whale_summary
+    from startup_event import ticker_cache
+    raw = get_whale_summary()
+    whale_list = sorted(
+        [{"ticker": t, "name": ticker_cache.get(t, t), **d} for t, d in raw.items()],
+        key=lambda x: x["total_amount"], reverse=True
+    )
+
+    async def generate():
+        try:
+            async for token in stream_market_summary(market_data, whale_list):
+                if await request.is_disconnected():
+                    break
+                yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            logger.error("마켓 요약 스트리밍 오류: %s", e)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.get("/api/whale/realtime")
 async def whale_realtime(request: Request):
     from kis_realtime import get_whale_events_sse
