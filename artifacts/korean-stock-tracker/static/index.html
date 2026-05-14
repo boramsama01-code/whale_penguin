@@ -178,7 +178,7 @@
 </header>
 
 <!-- 긴급 배너 -->
-<div id="emergency-banner" class="hidden emergency-banner px-4 py-2 text-center text-sm font-bold text-pink-300"></div>
+<div id="emergency-banner" class="hidden emergency-banner px-4 py-2 text-center text-sm font-bold text-pink-300 cursor-pointer select-none" onclick="bannerClick()"></div>
 
 <!-- 설정 모달 -->
 <div id="settings-modal" class="fixed inset-0 z-[300] bg-black/80 hidden flex items-center justify-center">
@@ -246,12 +246,20 @@
               <button class="sub-tab" id="sub-daily" onclick="switchWhaleSubTab('daily')">오늘의 고래 출몰 지역</button>
             </div>
           </div>
-          <!-- 레전드 -->
-          <div class="flex flex-wrap gap-2 text-xs mb-2 mt-2" id="whale-legend">
-            <span class="px-2 py-0.5 rounded border border-yellow-800 text-yellow-500">SMALL 3σ+</span>
-            <span class="px-2 py-0.5 rounded border border-orange-800 text-orange-500">MEDIUM 5σ+</span>
-            <span class="px-2 py-0.5 rounded border border-red-800 text-red-500">LARGE 8σ+</span>
-            <span class="text-gray-700 self-center">※ 종목별 평균 대비 이상 거래량 기준</span>
+          <!-- 레전드 + 필터 -->
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-2 mt-2">
+            <div class="flex flex-wrap gap-1.5 text-xs" id="whale-legend">
+              <span class="px-2 py-0.5 rounded border border-yellow-800 text-yellow-500">SMALL 3σ+</span>
+              <span class="px-2 py-0.5 rounded border border-orange-800 text-orange-500">MEDIUM 5σ+</span>
+              <span class="px-2 py-0.5 rounded border border-red-800 text-red-500">LARGE 8σ+</span>
+              <span class="px-2 py-0.5 rounded border border-pink-800 text-pink-400">EMERGENCY</span>
+            </div>
+            <div class="flex gap-1" id="whale-filter-btns">
+              <button onclick="setWhaleFilter('ALL')" data-filter="ALL" class="whale-filter-btn px-2 py-0.5 rounded text-xs border border-cyan-700 text-cyan-400">전체</button>
+              <button onclick="setWhaleFilter('LARGE')" data-filter="LARGE" class="whale-filter-btn px-2 py-0.5 rounded text-xs border border-gray-700 text-gray-500">LARGE↑</button>
+              <button onclick="setWhaleFilter('MEDIUM')" data-filter="MEDIUM" class="whale-filter-btn px-2 py-0.5 rounded text-xs border border-gray-700 text-gray-500">MEDIUM</button>
+              <button onclick="setWhaleFilter('SMALL')" data-filter="SMALL" class="whale-filter-btn px-2 py-0.5 rounded text-xs border border-gray-700 text-gray-500">SMALL</button>
+            </div>
           </div>
           <!-- 실시간 피드 -->
           <div id="whale-subtab-realtime" class="whale-subtab">
@@ -280,8 +288,11 @@
       <!-- 사이드 패널 -->
       <div class="space-y-4">
         <div class="card p-4">
-          <h3 class="text-xs text-gray-500 mb-3 uppercase tracking-wider"><i class="fas fa-chart-bar mr-1"></i>5분 누적 고래</h3>
-          <div id="whale-summary" class="space-y-2 text-xs">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-xs text-gray-500 uppercase tracking-wider"><i class="fas fa-list mr-1"></i>실시간 출몰 기록</h3>
+            <button onclick="loadWhaleSummary()" class="text-gray-700 hover:text-gray-400 text-xs"><i class="fas fa-sync text-xs"></i></button>
+          </div>
+          <div id="whale-summary" class="space-y-1 text-xs">
             <p class="text-gray-600 text-center py-4">데이터 없음</p>
           </div>
         </div>
@@ -877,27 +888,36 @@ async function loadDailyWhale() {
       return;
     }
     const LEVEL_COLOR = { SMALL: 'text-yellow-400', MEDIUM: 'text-orange-400', LARGE: 'text-red-400', EMERGENCY: 'text-pink-400' };
-    el.innerHTML = data.items.map((item, i) => `
+    const LEVEL_BADGE = { SMALL: '🟡', MEDIUM: '🟠', LARGE: '🔴', EMERGENCY: '🚨' };
+    el.innerHTML = data.items.map((item, i) => {
+      const lc = LEVEL_COLOR[item.top_level] || 'text-gray-400';
+      const badge = LEVEL_BADGE[item.top_level] || '⬜';
+      const lastTime = item.last_seen || item.last_time || '--';
+      const firstTime = item.first_seen || item.first_time || '--';
+      const volR = item.vol_ratio ? `${item.vol_ratio}x` : '';
+      return `
       <div class="card p-3 whale-${item.top_level || 'SMALL'} cursor-pointer hover:brightness-110"
            onclick="quickAnalyzeByTicker('${item.ticker}')">
         <div class="flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <span class="text-gray-600 text-xs w-5">#${i+1}</span>
-            <div>
-              <span class="text-white font-bold text-sm">${item.name || item.ticker}</span>
-              <span class="text-gray-500 text-xs ml-1">${item.ticker}</span>
+          <div class="flex items-center gap-2">
+            <span class="text-gray-600 text-xs w-4 shrink-0">${i+1}</span>
+            <span class="shrink-0">${badge}</span>
+            <div class="min-w-0">
+              <span class="text-white font-bold text-sm">${item.name && item.name !== item.ticker ? item.name : item.ticker}</span>
+              <span class="text-gray-600 text-xs ml-1">${item.ticker}</span>
             </div>
           </div>
-          <div class="text-right">
-            <div class="${LEVEL_COLOR[item.top_level] || 'text-gray-400'} font-bold">${formatAmount(item.total_amount)}</div>
-            <div class="text-gray-600 text-xs">${item.event_count || 0}회 감지</div>
+          <div class="text-right shrink-0">
+            <div class="${lc} font-bold">${formatAmount(item.total_amount)}</div>
+            <div class="text-gray-600 text-xs">${item.event_count ? item.event_count+'회' : ''}${volR ? ' · '+volR : ''}</div>
           </div>
         </div>
         <div class="mt-1 flex justify-between text-xs text-gray-600">
-          <span>최고 등급: <span class="${LEVEL_COLOR[item.top_level] || 'text-gray-400'}">${item.top_level || 'SMALL'}</span></span>
-          <span>최근: ${item.last_time || '--'}</span>
+          <span>등급: <span class="${lc} font-bold">${item.top_level || 'SMALL'}</span></span>
+          <span>${firstTime !== '--' ? firstTime+' ~ ' : ''}${lastTime}</span>
         </div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   } catch(e) {
     el.innerHTML = `<div class="text-center text-red-500 py-6 text-xs">오류: ${e.message}</div>`;
   }
@@ -978,27 +998,42 @@ function addWhaleFeedItem(data) {
   const placeholder = feed.querySelector('.text-center');
   if (placeholder) feed.innerHTML = '';
   if (data.is_emergency) showEmergencyBanner(data);
-  const amount = (data.amount / 1e6).toFixed(0);
+
+  const displayName = (data.name && data.name !== data.ticker) ? data.name : data.ticker;
+  const amount = data.amount >= 1e8 ? (data.amount/1e8).toFixed(1)+'억' : (data.amount/1e6).toFixed(0)+'백만';
   const acc = (data.accumulated_5m / 1e8).toFixed(1);
-  const volRatio = data.vol_ratio ? data.vol_ratio.toFixed(0) + 'x' : '';
+  const volRatio = data.vol_ratio && data.vol_ratio > 0 ? `${data.vol_ratio.toFixed(0)}x` : '';
   const levelColor = { SMALL: 'text-yellow-400', MEDIUM: 'text-orange-400', LARGE: 'text-red-400', EMERGENCY: 'text-pink-400' }[data.level] || 'text-gray-400';
+  const levelBadge = data.level === 'EMERGENCY' ? '🚨' : data.level === 'LARGE' ? '🔴' : data.level === 'MEDIUM' ? '🟠' : '🟡';
+
   const item = document.createElement('div');
   item.className = `card p-3 whale-${data.level} cursor-pointer hover:brightness-110`;
   item.onclick = () => { state.currentTicker = data.ticker; switchTab('analyze'); document.getElementById('analyze-input').value = data.ticker; analyzeFromInput(); };
+
+  // Apply current filter
+  if (_whaleFilter !== 'ALL') {
+    const isLargeUp = data.level === 'LARGE' || data.level === 'EMERGENCY';
+    const matches = data.level === _whaleFilter || (_whaleFilter === 'LARGE' && isLargeUp);
+    if (!matches) item.style.display = 'none';
+  }
+
   item.innerHTML = `
     <div class="flex items-center justify-between">
-      <div class="flex items-center gap-3">
-        <span class="${levelColor} font-bold text-xs w-24">${data.level} ${volRatio}</span>
-        <div><span class="text-white text-sm font-bold">${data.name || data.ticker}</span><span class="text-gray-500 text-xs ml-1">${data.ticker}</span></div>
+      <div class="flex items-center gap-2">
+        <span class="text-sm shrink-0">${levelBadge}</span>
+        <div>
+          <span class="text-white text-sm font-bold">${displayName}</span>
+          <span class="text-gray-600 text-xs ml-1">${data.ticker}</span>
+        </div>
       </div>
       <div class="text-right">
-        <div class="${levelColor} font-bold">${amount}백만</div>
+        <div class="${levelColor} font-bold text-sm">${amount}</div>
         <div class="text-gray-600 text-xs">${data.price?.toLocaleString()}원</div>
       </div>
     </div>
-    <div class="flex justify-between mt-1 text-xs text-gray-600">
-      <span>5분 누적: <span class="text-gray-400">${acc}억</span></span>
-      <span>${data.time || ''}</span>
+    <div class="flex justify-between mt-1 text-xs">
+      <span class="text-gray-600">5분누적 <span class="${levelColor} font-bold">${acc}억</span>${volRatio ? ` <span class="text-gray-500">· ${volRatio}</span>` : ''}</span>
+      <span class="text-gray-700">${data.time || ''}</span>
     </div>`;
   feed.insertBefore(item, feed.firstChild);
   state.whaleCount++;
@@ -1006,11 +1041,47 @@ function addWhaleFeedItem(data) {
   if (state.whaleCount % 5 === 0) loadWhaleSummary();
 }
 
+let _emergencyTicker = null;
 function showEmergencyBanner(data) {
+  _emergencyTicker = data.ticker;
   const banner = document.getElementById('emergency-banner');
-  banner.textContent = `🚨 긴급 고래 경보! ${data.name}(${data.ticker}) 5분 누적 ${(data.accumulated_5m/1e8).toFixed(1)}억 돌파!`;
+  banner.innerHTML = `🚨 긴급 고래 경보! <b>${data.name || data.ticker}</b>(${data.ticker}) 5분 누적 <b>${(data.accumulated_5m/1e8).toFixed(1)}억</b> 돌파! <span class="underline opacity-70">▶ 클릭하여 분석</span>`;
   banner.classList.remove('hidden');
-  setTimeout(() => banner.classList.add('hidden'), 10000);
+  clearTimeout(banner._hideTimer);
+  banner._hideTimer = setTimeout(() => banner.classList.add('hidden'), 15000);
+}
+function bannerClick() {
+  if (_emergencyTicker) {
+    document.getElementById('emergency-banner').classList.add('hidden');
+    quickAnalyzeByTicker(_emergencyTicker);
+  }
+}
+
+let _whaleFilter = 'ALL';
+function setWhaleFilter(level) {
+  _whaleFilter = level;
+  document.querySelectorAll('.whale-filter-btn').forEach(b => {
+    const isActive = b.dataset.filter === level;
+    if (isActive) {
+      b.className = `whale-filter-btn px-2 py-0.5 rounded text-xs border ${
+        level === 'LARGE' ? 'border-red-700 text-red-400 bg-red-950' :
+        level === 'MEDIUM' ? 'border-orange-700 text-orange-400 bg-orange-950' :
+        level === 'SMALL' ? 'border-yellow-700 text-yellow-400 bg-yellow-950' :
+        'border-cyan-700 text-cyan-400 bg-cyan-950'}`;
+    } else {
+      b.className = 'whale-filter-btn px-2 py-0.5 rounded text-xs border border-gray-700 text-gray-500';
+    }
+  });
+  const feed = document.getElementById('whale-feed');
+  [...feed.children].forEach(el => {
+    if (level === 'ALL') {
+      el.style.display = '';
+    } else {
+      const isLargeUp = el.classList.contains('whale-LARGE') || el.classList.contains('whale-EMERGENCY');
+      const matchLevel = el.classList.contains(`whale-${level}`) || (level === 'LARGE' && isLargeUp);
+      el.style.display = matchLevel ? '' : 'none';
+    }
+  });
 }
 
 async function loadWhaleSummary() {
@@ -1018,16 +1089,24 @@ async function loadWhaleSummary() {
     const res = await fetch(`${BASE}/api/whale/summary`);
     const data = await res.json();
     const el = document.getElementById('whale-summary');
-    if (!data.summary?.length) { el.innerHTML = '<p class="text-gray-600 text-center py-4 text-xs">5분 내 고래 없음</p>'; return; }
-    el.innerHTML = data.summary.slice(0,8).map(s => `
-      <div class="flex justify-between items-center py-1 border-b border-gray-800 cursor-pointer hover:text-cyan-400"
+    if (!data.summary?.length) { el.innerHTML = '<p class="text-gray-600 text-center py-4 text-xs">실시간 감지 대기중...</p>'; return; }
+    const LEVEL_COLOR = { SMALL: 'text-yellow-400', MEDIUM: 'text-orange-400', LARGE: 'text-red-400', EMERGENCY: 'text-pink-400' };
+    el.innerHTML = data.summary.slice(0,10).map(s => {
+      const topLevel = s.top_level || (s.total_amount >= 5e8 ? 'EMERGENCY' : s.total_amount >= 1e8 ? 'LARGE' : s.total_amount >= 3e7 ? 'MEDIUM' : 'SMALL');
+      const lc = LEVEL_COLOR[topLevel] || 'text-gray-400';
+      const dot = topLevel === 'EMERGENCY' ? '🚨' : topLevel === 'LARGE' ? '🔴' : topLevel === 'MEDIUM' ? '🟠' : '🟡';
+      return `<div class="flex justify-between items-center py-1 border-b border-gray-800 cursor-pointer hover:bg-gray-900 rounded px-1"
            onclick="quickAnalyzeByTicker('${s.ticker}')">
-        <span class="text-gray-400 text-xs truncate">${s.name}</span>
-        <span class="text-orange-400 font-bold text-xs">${(s.total_amount/1e8).toFixed(1)}억</span>
-      </div>`).join('');
+        <div class="flex items-center gap-1.5 min-w-0">
+          <span class="shrink-0 text-xs">${dot}</span>
+          <span class="text-gray-300 text-xs truncate">${s.name !== s.ticker ? s.name : s.ticker}</span>
+        </div>
+        <span class="${lc} font-bold text-xs shrink-0 ml-1">${(s.total_amount/1e8).toFixed(1)}억</span>
+      </div>`;
+    }).join('');
   } catch(e) {}
 }
-setInterval(loadWhaleSummary, 30000);
+setInterval(loadWhaleSummary, 20000);
 loadWhaleSummary();
 
 // ===== QUICK SEARCH =====
@@ -1503,20 +1582,58 @@ async function sendChat() {
   if (!q) return;
   input.value = '';
   addChatMessage('user', q);
-  const thinkingDiv = document.createElement('div');
-  thinkingDiv.className = 'text-gray-600 text-xs italic';
-  thinkingDiv.textContent = '// 분석 중...';
-  document.getElementById('chat-messages').appendChild(thinkingDiv);
+
+  const chatEl = document.getElementById('chat-messages');
+  const aiDiv = document.createElement('div');
+  aiDiv.className = 'text-gray-300 text-xs';
+  const nick = '<span class="text-lime-700">&gt; </span>';
+  aiDiv.innerHTML = nick + '<span class="chat-content text-gray-600 italic">분석 중...</span>';
+  chatEl.appendChild(aiDiv);
+  chatEl.scrollTop = chatEl.scrollHeight;
+
+  let fullText = '';
   try {
-    const res = await fetch(`${BASE}/api/chat`, {
+    const res = await fetch(`${BASE}/api/chat/stream`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question: q, ticker: state.currentTicker, history: state.chatHistory.slice(-6) })
     });
-    const data = await res.json();
-    thinkingDiv.remove();
-    addChatMessage('assistant', data.answer || '응답 없음');
+
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || '응답 실패');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const ev = JSON.parse(line.slice(6));
+            if (ev.token) {
+              fullText += ev.token;
+              const escaped = fullText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+              aiDiv.innerHTML = nick + `<span class="chat-content">${escaped}</span>`;
+              chatEl.scrollTop = chatEl.scrollHeight;
+            } else if (ev.done) {
+              break;
+            } else if (ev.error) {
+              throw new Error(ev.error);
+            }
+          } catch(parseErr) { /* non-JSON line, skip */ }
+        }
+      }
+    }
+    if (fullText) {
+      state.chatHistory.push({ role: 'assistant', content: fullText });
+      if (state.clerkUser) saveUserData();
+    }
   } catch(e) {
-    thinkingDiv.remove();
+    aiDiv.remove();
     addChatMessage('system', `오류: ${e.message}`);
   }
 }

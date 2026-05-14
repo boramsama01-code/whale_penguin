@@ -496,6 +496,39 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/chat/stream")
+async def chat_stream(req: ChatRequest, request: Request):
+    from claude_analyst import stream_chat_with_analyst
+    from fastapi.responses import StreamingResponse
+
+    context = None
+    if req.ticker:
+        from startup_event import ticker_cache
+        t = str(req.ticker).zfill(6)
+        context = {"ticker": t, "name": ticker_cache.get(t, t)}
+
+    async def generate():
+        try:
+            async for token in stream_chat_with_analyst(
+                question=req.question,
+                context=context,
+                history=req.history,
+            ):
+                if await request.is_disconnected():
+                    break
+                yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except Exception as e:
+            logger.error("스트리밍 채팅 오류: %s", e)
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 class PortfolioPosition(BaseModel):
     ticker: str
     avg_price: float

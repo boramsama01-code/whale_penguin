@@ -494,10 +494,20 @@ def get_whale_summary() -> dict:
     now = time.time()
     for ticker, acc in _whale_accumulator.items():
         if now - acc["last_reset"] <= 300 and acc["total_amount"] > 0:
+            events = acc.get("events", [])
+            levels = [e.get("level", "SMALL") for e in events]
+            top_level = "SMALL"
+            if "EMERGENCY" in levels or int(acc["total_amount"]) >= 500_000_000:
+                top_level = "EMERGENCY"
+            elif "LARGE" in levels:
+                top_level = "LARGE"
+            elif "MEDIUM" in levels:
+                top_level = "MEDIUM"
             summary[ticker] = {
                 "total_amount": int(acc["total_amount"]),
-                "event_count": len(acc["events"]),
+                "event_count": len(events),
                 "last_reset": acc["last_reset"],
+                "top_level": top_level,
             }
     return summary
 

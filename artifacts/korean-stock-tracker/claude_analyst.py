@@ -256,6 +256,93 @@ def _fallback(score: float, reason: str) -> dict:
     }
 
 
+async def stream_chat_with_analyst(
+    question: str,
+    context: Optional[dict] = None,
+    history: Optional[list] = None,
+):
+    """AI 채팅 스트리밍 버전 — async generator, yields text tokens"""
+    messages = []
+    if history:
+        for h in history[-6:]:
+            if h.get("role") and h.get("content"):
+                messages.append({"role": h["role"], "content": h["content"]})
+
+    ctx_parts = []
+    if context:
+        ticker = str(context.get("ticker", "")).zfill(6)
+        cached = _analysis_cache.get(ticker)
+        if cached:
+            score = cached.get("score", {})
+            ai = cached.get("ai_analysis", {})
+            acc = ai.get("매집가격대", {})
+            tgt = ai.get("목표가격대", {})
+            ctx_parts.append(f"""[현재 분석 종목]
+종목: {ticker} ({cached.get('name', ticker)})
+현재가: {cached.get('price', 0):,}원 ({cached.get('change_rate', 0):+.2f}%)
+52주 범위: {cached.get('low52', 0):,} ~ {cached.get('high52', 0):,}원
+분석 데이터: {cached.get('ohlcv_len', 0)}거래일
+
+[세력 점수]
+종합: {score.get('total', 0):.1f}/10 (등급: {score.get('grade', 'N/A')})
+거래량이상: {score.get('scores', {}).get('A', 0):.1f} — {score.get('reasons', {}).get('A', '')}
+가격/거래량: {score.get('scores', {}).get('B', 0):.1f} — {score.get('reasons', {}).get('B', '')}
+수급신뢰도: {score.get('scores', {}).get('C', 0):.1f} — {score.get('reasons', {}).get('C', '')}
+기술지표: {score.get('scores', {}).get('D', 0):.1f} — {score.get('reasons', {}).get('D', '')}
+거래량프로파일: {score.get('scores', {}).get('E', 0):.1f} — {score.get('reasons', {}).get('E', '')}
+박스권돌파: {score.get('scores', {}).get('F', 0):.1f} — {score.get('reasons', {}).get('F', '')}
+업종모멘텀: {score.get('scores', {}).get('G', 0):.1f} — {score.get('reasons', {}).get('G', '')}
+고래신호: {score.get('scores', {}).get('H', 0):.1f} — {score.get('reasons', {}).get('H', '')}
+
+[AI 분석 결과]
+세력단계: {ai.get('세력단계', 'N/A')}
+장기패턴: {ai.get('장기패턴', 'N/A')}
+신뢰도: {ai.get('신뢰도', 'N/A')}
+펌핑가능성: {ai.get('펌핑가능성', False)}
+진입추천: {ai.get('진입추천', False)}
+핵심근거: {ai.get('핵심근거', 'N/A')}
+매집가격대: {acc.get('하단', 'N/A')}~{acc.get('상단', 'N/A')}원 (추정: {acc.get('추정여부', False)})
+목표가: 단기 {tgt.get('단기', 'N/A')}원 / 중기 {tgt.get('중기', 'N/A')}원
+
+[최근 공시]
+{', '.join(cached.get('recent_disclosures', ['없음']))}""")
+        else:
+            ctx_parts.append(f"[안내] {context.get('name', ticker)} ({ticker}) 종목의 분석 데이터가 없습니다. 사용자에게 'AI분석 탭에서 해당 종목을 검색하고 분석 버튼을 눌러주세요'라고 안내하세요.")
+
+    ctx_str = "\n".join(ctx_parts)
+    if ctx_str:
+        ctx_str = ctx_str + "\n\n"
+
+    messages.append({"role": "user", "content": ctx_str + question})
+
+    system = """당신은 한국 주식 시장 전문 AI 애널리스트입니다.
+세력 매매, 수급 분석, 기술적 분석, 공시 해석, 장기 매집/분산 패턴 분석을 전문으로 합니다.
+
+★ 절대 규칙:
+1. 메시지에 종목 데이터(현재가, 세력점수, 매집가격대, 목표가, 수급 등)가 포함되어 있으면 그 데이터를 즉시 사용하여 답변하라. 절대로 "데이터가 없다", "차트를 보내달라", "추가 정보가 필요하다" 같은 말을 하지 마라.
+2. 매수 여부, 목표가, 손절가, 진입 시점을 물으면 제공된 데이터를 근거로 명확한 견해를 제시하라. 회피하지 마라.
+3. 이미 분석된 데이터가 있으면 "정확한 분석을 위해 정보가 필요합니다" 같은 말은 절대 하지 마라.
+4. 데이터가 전혀 없을 때(no data 상황)만 "AI분석 탭에서 해당 종목을 먼저 분석해주세요"라고 안내하라.
+
+한국어로 명확하고 직접적으로 답변하라. 단락 구분을 명확히 하고 줄바꿈을 적절히 사용하라."""
+
+    try:
+        client = _get_anthropic_client()
+        async with client.messages.stream(
+            model=MODEL,
+            max_tokens=1200,
+            system=system,
+            messages=messages,
+        ) as stream:
+            async for text in stream.text_stream:
+                yield text
+    except asyncio.TimeoutError:
+        yield "\n[AI 응답 타임아웃이 발생했습니다. 다시 시도해 주세요.]"
+    except Exception as e:
+        logger.error("채팅 스트리밍 오류: %s", e)
+        yield f"\n[AI 응답 오류: {str(e)}]"
+
+
 async def chat_with_analyst(
     question: str,
     context: Optional[dict] = None,
