@@ -45,6 +45,10 @@ _ticker_tick_stats: dict[str, dict] = defaultdict(lambda: {
 RECONNECT_DELAY = 5
 MAX_RECONNECT = 10
 
+# REST 폴링 fallback — WebSocket 연결 실패 시 사용
+_polling_task = None
+_polling_seen: dict[str, float] = {}  # ticker → last_seen_ts (중복 방지)
+
 
 def get_ws_url() -> str:
     env = os.getenv("KIS_ENV", "PROD").upper()
@@ -312,18 +316,130 @@ async def _ws_loop():
     _ws_connection = None
 
 
+async def _polling_whale_loop():
+    """
+    KIS WebSocket 연결 실패 시 REST API 폴링으로 고래 감지 fallback.
+    60초마다 KOSPI·KOSDAQ 거래량 순위를 조회하고,
+    거래량 급등(vol_ratio > 30) 종목을 고래 이벤트로 변환해 피드에 추가.
+    """
+    from market_filter import is_market_open
+    POLL_INTERVAL = 60  # 초
+    VOL_RATIO_THRESHOLD = 30.0  # vol_ratio 이 이상이면 고래 후보
+
+    logger.info("KIS REST 폴링 fallback 시작 (60초 간격)")
+    await asyncio.sleep(15)  # 서버 초기화 완료 대기
+
+    while _running:
+        try:
+            if not is_market_open():
+                await asyncio.sleep(60)
+                continue
+
+            from kis_data import get_volume_rank_kis
+            from startup_event import ticker_cache
+
+            kospi, kosdaq = await asyncio.gather(
+                get_volume_rank_kis("J", 50),
+                get_volume_rank_kis("Q", 50),
+            )
+
+            now_ts = time.time()
+            all_stocks = (kospi or []) + (kosdaq or [])
+            new_events = 0
+
+            for item in all_stocks:
+                ticker = item.get("ticker", "")
+                vol_ratio = float(item.get("vol_ratio", 0) or 0)
+                price = float(item.get("price", 0) or 0)
+                volume = int(item.get("volume", 0) or 0)
+                amount = float(item.get("amount", 0) or 0)
+
+                if not ticker or vol_ratio < VOL_RATIO_THRESHOLD or price <= 0:
+                    continue
+
+                # 중복 방지: 같은 종목 5분 내 재발생 무시
+                last_seen = _polling_seen.get(ticker, 0)
+                if now_ts - last_seen < 300:
+                    continue
+
+                # 거래량 비율로 레벨 분류
+                if vol_ratio >= 300:
+                    level = "LARGE"
+                elif vol_ratio >= 100:
+                    level = "MEDIUM"
+                else:
+                    level = "SMALL"
+
+                name = ticker_cache.get(ticker) or item.get("name") or ticker
+                change_rate = float(item.get("change_rate", 0) or 0)
+
+                event = {
+                    "ticker": ticker,
+                    "name": name,
+                    "price": price,
+                    "volume": volume,
+                    "amount": int(amount),
+                    "vol_ratio": round(vol_ratio, 1),
+                    "level": level,
+                    "accumulated_5m": int(amount),
+                    "is_emergency": vol_ratio >= 500,
+                    "change_rate": round(change_rate, 2),
+                    "time": "",
+                    "timestamp": int(now_ts * 1000),
+                    "source": "rest_poll",  # REST 폴링 출처 표시
+                }
+
+                # 누적 집계에도 반영
+                _reset_daily_if_needed()
+                acc = _whale_accumulator[ticker]
+                acc["total_amount"] += amount
+                acc["events"].append({"time": "", "amount": amount, "level": level, "volume": volume})
+                acc["last_reset"] = now_ts
+
+                d = _daily_whale[ticker]
+                d["total_amount"] += amount
+                d["event_count"] += 1
+                d["levels"].append(level)
+                d["name"] = name
+                d["price"] = price
+                if d["first_seen"] is None:
+                    d["first_seen"] = ""
+                d["last_seen"] = ""
+
+                _polling_seen[ticker] = now_ts
+
+                try:
+                    _whale_queue.put_nowait(event)
+                    new_events += 1
+                except asyncio.QueueFull:
+                    try:
+                        _whale_queue.get_nowait()
+                        _whale_queue.put_nowait(event)
+                    except Exception:
+                        pass
+
+            if new_events:
+                logger.info("REST 폴링 고래 감지: %d개 이벤트", new_events)
+
+        except Exception as e:
+            logger.error("REST 폴링 오류: %s", e)
+
+        await asyncio.sleep(POLL_INTERVAL)
+
+
 async def start_ws():
-    global _ws_task, _running
+    global _ws_task, _polling_task, _running
     if _running:
         return
 
     _running = True
     _ws_task = asyncio.create_task(_ws_loop())
+    _polling_task = asyncio.create_task(_polling_whale_loop())
     logger.info("KIS WebSocket 태스크 시작")
 
 
 async def stop_ws():
-    global _running, _ws_task, _ws_connection
+    global _running, _ws_task, _ws_connection, _polling_task
     _running = False
 
     if _ws_connection:
@@ -333,13 +449,15 @@ async def stop_ws():
             pass
         _ws_connection = None
 
-    if _ws_task:
-        _ws_task.cancel()
-        try:
-            await _ws_task
-        except asyncio.CancelledError:
-            pass
-        _ws_task = None
+    for task in [_ws_task, _polling_task]:
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    _ws_task = None
+    _polling_task = None
     logger.info("KIS WebSocket 중지")
 
 

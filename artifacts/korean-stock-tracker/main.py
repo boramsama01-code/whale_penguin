@@ -289,44 +289,27 @@ async def market_status():
         pass
     result = get_market_state()
 
-    # 시장 breadth (상승/하락/보합 종목 수) — 5분 캐시
+    # 시장 breadth (상승/하락/보합 종목 수) — KIS 거래량 순위에서 등락률로 추정, 10분 캐시
     now_ts = time.time()
-    if now_ts - _breadth_cache["ts"] > 300:
+    if now_ts - _breadth_cache["ts"] > 600:
         try:
-            from pykrx import stock as pykrx_stock
-            now_dt = _dt.datetime.now()
-            d = now_dt
-            for _ in range(7):
-                if d.weekday() < 5:
-                    break
-                d -= _dt.timedelta(days=1)
-            date_str = d.strftime("%Y%m%d")
-
-            async def _fetch_market(market_name: str):
-                try:
-                    return await asyncio.wait_for(
-                        asyncio.to_thread(pykrx_stock.get_market_ohlcv_by_ticker, date_str, market=market_name),
-                        timeout=20.0
-                    )
-                except Exception:
-                    return None
-
-            kospi_df, kosdaq_df = await asyncio.gather(
-                _fetch_market("KOSPI"), _fetch_market("KOSDAQ")
+            from kis_data import get_volume_rank_kis
+            kospi_list, kosdaq_list = await asyncio.gather(
+                get_volume_rank_kis("J", 200),
+                get_volume_rank_kis("Q", 200),
             )
 
-            def _breadth(df):
-                if df is None or df.empty:
+            def _breadth_from_rank(lst):
+                if not lst:
                     return {"up": 0, "down": 0, "flat": 0}
-                chg_col = next((c for c in ["등락률"] if c in df.columns), None)
-                if not chg_col:
-                    return {"up": 0, "down": 0, "flat": 0}
-                chg = df[chg_col]
-                return {"up": int((chg > 0).sum()), "down": int((chg < 0).sum()), "flat": int((chg == 0).sum())}
+                up = sum(1 for x in lst if x.get("change_rate", 0) > 0)
+                down = sum(1 for x in lst if x.get("change_rate", 0) < 0)
+                flat = len(lst) - up - down
+                return {"up": up, "down": down, "flat": flat}
 
             _breadth_cache["data"] = {
-                "kospi": _breadth(kospi_df),
-                "kosdaq": _breadth(kosdaq_df),
+                "kospi": _breadth_from_rank(kospi_list),
+                "kosdaq": _breadth_from_rank(kosdaq_list),
             }
             _breadth_cache["ts"] = now_ts
         except Exception as e:

@@ -102,7 +102,28 @@ async def load_ticker_names_from_pykrx():
         _save_to_disk()
 
 
+async def prefetch_kis_token():
+    """
+    서버 시작 시 KIS 액세스 토큰을 미리 발급받아 캐시에 저장.
+    WebSocket 승인 키 요청과의 속도 제한 충돌을 방지하기 위해 2초 지연 후 실행.
+    KIS REST API: POST https://openapi.koreainvestment.com:9443/oauth2/tokenP
+    (분당 1회 제한이 있으므로, 서버 재시작 후 최초 1회만 호출됨)
+    """
+    await asyncio.sleep(2)  # WebSocket 승인 키 요청과 충돌 방지
+    try:
+        from kis_auth import get_access_token
+        token = await get_access_token()
+        if token:
+            logger.info("KIS 액세스 토큰 사전 발급 완료")
+        else:
+            logger.warning("KIS 액세스 토큰 사전 발급 실패")
+    except Exception as e:
+        logger.warning("KIS 토큰 사전 발급 오류 (분당 1회 제한일 수 있음): %s", e)
+
+
 async def init_market_state():
+    """KIS 토큰이 캐시된 후 시장 상태를 초기화."""
+    await asyncio.sleep(5)  # 토큰 발급 완료 대기
     try:
         from market_filter import update_market_state
         await update_market_state()
@@ -117,12 +138,14 @@ async def on_startup():
     ticker_cache.update(_FALLBACK)
     _load_from_disk()
 
-    # 백그라운드: DART, pykrx 보강, 시장 상태
+    # 백그라운드: KIS 토큰 사전 발급, DART, 시장 상태
     asyncio.create_task(_background_init())
     logger.info("앱 시작 이벤트 완료 (백그라운드 초기화 진행 중)")
 
 
 async def _background_init():
+    # KIS 토큰 사전 발급 먼저
+    await prefetch_kis_token()
     # DART + 시장 상태 병렬
     await asyncio.gather(
         load_dart_corp_codes(),

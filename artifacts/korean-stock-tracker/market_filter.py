@@ -34,52 +34,56 @@ def get_market_state() -> dict:
     return _market_state
 
 
+async def _fetch_index_kis(index_code: str) -> Optional[dict]:
+    """KIS REST API로 지수 현재값 조회."""
+    try:
+        from kis_data import get_index_kis
+        return await get_index_kis(index_code)
+    except Exception as e:
+        logger.debug("KIS 지수 조회 실패 %s: %s", index_code, e)
+        return None
+
+
 async def update_market_state():
     global _market_state
     _market_state["is_open"] = is_market_open()
 
-    try:
-        import pandas as pd
-        from pykrx import stock as pykrx_stock
-        from datetime import timedelta
+    # KIS REST API로 KOSPI(0001), KOSDAQ(1001) 지수 동시 조회
+    kospi_data, kosdaq_data = await asyncio.gather(
+        _fetch_index_kis("0001"),
+        _fetch_index_kis("1001"),
+        return_exceptions=True,
+    )
 
-        end = now_kst().strftime("%Y%m%d")
-        start = (now_kst() - timedelta(days=60)).strftime("%Y%m%d")
+    status = "OPEN" if is_market_open() else "CLOSED"
 
-        try:
-            kospi_df = await asyncio.to_thread(
-                pykrx_stock.get_index_ohlcv_by_date, start, end, "1001"
-            )
-            if kospi_df is not None and len(kospi_df) >= 1:
-                close_col = "종가" if "종가" in kospi_df.columns else kospi_df.columns[3]
-                close = kospi_df[close_col].values.astype(float)
-                ma20 = float(np.mean(close[-min(20, len(close)):]))
-                current = float(close[-1])
-                _market_state["kospi"]["index"] = current
-                _market_state["kospi"]["ma20_bullish"] = current > ma20
-                _market_state["kospi"]["status"] = "OPEN" if is_market_open() else "CLOSED"
-        except Exception as e:
-            logger.warning("KOSPI 지수 조회 실패: %s", str(e))
+    if isinstance(kospi_data, dict) and kospi_data.get("index", 0) > 0:
+        idx = float(kospi_data["index"])
+        _market_state["kospi"]["index"] = idx
+        _market_state["kospi"]["status"] = status
+        # 전일 대비 등락률로 강세 판단 (등락률 > 0이면 상승 중)
+        _market_state["kospi"]["ma20_bullish"] = float(kospi_data.get("change_rate", 0)) >= 0
+    else:
+        logger.warning("KOSPI 지수 조회 실패 (KIS)")
+        _market_state["kospi"]["status"] = status
 
-        try:
-            kosdaq_df = await asyncio.to_thread(
-                pykrx_stock.get_index_ohlcv_by_date, start, end, "2001"
-            )
-            if kosdaq_df is not None and len(kosdaq_df) >= 1:
-                close_col = "종가" if "종가" in kosdaq_df.columns else kosdaq_df.columns[3]
-                close = kosdaq_df[close_col].values.astype(float)
-                ma20 = float(np.mean(close[-min(20, len(close)):]))
-                current = float(close[-1])
-                _market_state["kosdaq"]["index"] = current
-                _market_state["kosdaq"]["ma20_bullish"] = current > ma20
-                _market_state["kosdaq"]["status"] = "OPEN" if is_market_open() else "CLOSED"
-        except Exception as e:
-            logger.warning("KOSDAQ 지수 조회 실패: %s", str(e))
+    if isinstance(kosdaq_data, dict) and kosdaq_data.get("index", 0) > 0:
+        idx = float(kosdaq_data["index"])
+        _market_state["kosdaq"]["index"] = idx
+        _market_state["kosdaq"]["status"] = status
+        _market_state["kosdaq"]["ma20_bullish"] = float(kosdaq_data.get("change_rate", 0)) >= 0
+    else:
+        logger.warning("KOSDAQ 지수 조회 실패 (KIS)")
+        _market_state["kosdaq"]["status"] = status
 
-        kospi_bull = _market_state["kospi"]["ma20_bullish"]
-        kosdaq_bull = _market_state["kosdaq"]["ma20_bullish"]
-        _market_state["strategy_on"] = kospi_bull or kosdaq_bull
+    kospi_bull = _market_state["kospi"]["ma20_bullish"]
+    kosdaq_bull = _market_state["kosdaq"]["ma20_bullish"]
+    _market_state["strategy_on"] = kospi_bull or kosdaq_bull
 
-    except Exception as e:
-        logger.error("시장 상태 업데이트 오류: %s", e)
-        _market_state["is_open"] = is_market_open()
+    if _market_state["kospi"]["index"] > 0 or _market_state["kosdaq"]["index"] > 0:
+        logger.info(
+            "시장 상태 갱신 — KOSPI: %.2f, KOSDAQ: %.2f, 장중: %s",
+            _market_state["kospi"]["index"],
+            _market_state["kosdaq"]["index"],
+            _market_state["is_open"],
+        )
