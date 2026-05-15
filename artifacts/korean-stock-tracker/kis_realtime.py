@@ -49,6 +49,21 @@ MAX_RECONNECT = 10
 _polling_task = None
 _polling_seen: dict[str, float] = {}  # ticker → last_seen_ts (중복 방지)
 
+# 폴링 클라이언트용 최근 이벤트 링버퍼
+_recent_events: list = []
+_MAX_RECENT = 300
+
+
+def _push_recent_event(event: dict) -> None:
+    global _recent_events
+    _recent_events.append(event)
+    if len(_recent_events) > _MAX_RECENT:
+        _recent_events = _recent_events[-_MAX_RECENT:]
+
+
+def get_recent_events(after_ts: float = 0) -> list:
+    return [e for e in _recent_events if e.get("timestamp", 0) > after_ts]
+
 
 def get_ws_url() -> str:
     env = os.getenv("KIS_ENV", "PROD").upper()
@@ -213,6 +228,7 @@ async def _process_execution(data: dict):
             d["first_seen"] = data["time"]
         d["last_seen"] = data["time"]
 
+        _push_recent_event(event)
         try:
             _whale_queue.put_nowait(event)
         except asyncio.QueueFull:
@@ -414,6 +430,7 @@ async def _polling_whale_loop():
 
                 _polling_seen[ticker] = now_ts
 
+                _push_recent_event(event)
                 try:
                     _whale_queue.put_nowait(event)
                     new_events += 1

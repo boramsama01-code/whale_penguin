@@ -384,6 +384,143 @@ async def whale_realtime(request: Request):
     return EventSourceResponse(event_generator())
 
 
+@app.get("/api/whale/events")
+async def whale_events_poll(after: float = 0):
+    from kis_realtime import get_recent_events
+    events = get_recent_events(after_ts=after)
+    return {"events": events, "server_ts": time.time() * 1000, "count": len(events)}
+
+
+@app.get("/api/analyze/{ticker}/stream")
+async def analyze_ticker_stream(ticker: str, request: Request):
+    ticker = str(ticker).zfill(6)
+
+    async def generate() -> AsyncGenerator:
+        try:
+            from screening import get_stock_detail
+            from dart_client import get_disclosures
+            from claude_analyst import analyze_stock, store_analysis_cache
+            from strategy import generate_strategy
+            from kis_realtime import get_whale_summary, subscribe_ticker
+
+            yield {"event": "progress", "data": json.dumps({"stage": "init", "msg": "종목 구독 설정 중..."}, ensure_ascii=False)}
+            await subscribe_ticker(ticker)
+
+            yield {"event": "progress", "data": json.dumps({"stage": "fetch", "msg": "주가 데이터 조회 중... (약 10~30초)"}, ensure_ascii=False)}
+            detail = await asyncio.wait_for(get_stock_detail(ticker), timeout=60.0)
+            if not detail:
+                yield {"event": "error", "data": json.dumps({"error": f"종목 {ticker} 데이터 없음 (pykrx 조회 실패)"})}
+                return
+
+            yield {"event": "progress", "data": json.dumps({"stage": "score", "msg": "세력 점수 계산 중..."}, ensure_ascii=False)}
+            disclosures = await get_disclosures(ticker, limit=5)
+            whale_summary = get_whale_summary()
+            whale_data = whale_summary.get(ticker)
+
+            if whale_data:
+                from scoring import score_whale_signal
+                ws, wr = score_whale_signal(whale_data)
+                detail["score"]["scores"]["H"] = ws
+                detail["score"]["reasons"]["H"] = wr
+                weights = detail["score"].get("weights", {"A":2,"B":1.5,"C":1.5,"D":1,"E":1,"F":2,"G":0.5,"H":2})
+                total_weight = sum(weights.values())
+                weighted_sum = sum(detail["score"]["scores"][k] * weights.get(k,1) for k in detail["score"]["scores"])
+                detail["score"]["total"] = round(weighted_sum / total_weight, 2)
+
+            market_change_20d = 0.0
+            try:
+                from pykrx import stock as pykrx_stock
+                from datetime import datetime as _dt, timedelta as _td
+                _end = _dt.now().strftime("%Y%m%d")
+                _start = (_dt.now() - _td(days=40)).strftime("%Y%m%d")
+                _kospi = await asyncio.wait_for(
+                    asyncio.to_thread(pykrx_stock.get_index_ohlcv_by_date, _start, _end, "1001"),
+                    timeout=5.0,
+                )
+                if _kospi is not None and len(_kospi) >= 20:
+                    _cc = "종가" if "종가" in _kospi.columns else _kospi.columns[3]
+                    market_change_20d = float((_kospi[_cc].values[-1] / _kospi[_cc].values[-20] - 1) * 100)
+            except Exception:
+                pass
+
+            if detail.get("ohlcv") and len(detail["ohlcv"]) >= 20:
+                import pandas as pd
+                from scoring import score_relative_momentum, _grade
+                _closes = [r["close"] for r in detail["ohlcv"]]
+                _odf = pd.DataFrame({"종가": _closes})
+                _gs, _gr = score_relative_momentum(_odf, market_change_20d)
+                detail["score"]["scores"]["G"] = _gs
+                detail["score"]["reasons"]["G"] = _gr
+                _weights = detail["score"].get("weights", {"A":2,"B":1.5,"C":1.5,"D":1,"E":1,"F":2,"G":0.5,"H":2})
+                _tw = sum(_weights.values())
+                _ws = sum(detail["score"]["scores"][k] * _weights.get(k,1) for k in detail["score"]["scores"])
+                detail["score"]["total"] = round(_ws / _tw, 2)
+                detail["score"]["grade"] = _grade(detail["score"]["total"])
+
+            ohlcv_summary = {}
+            if detail.get("ohlcv"):
+                recent = detail["ohlcv"][-5:]
+                all_ohlcv = detail["ohlcv"]
+                ohlcv_summary = {
+                    "최근5일종가": [r["close"] for r in recent],
+                    "최근5일거래량": [r["volume"] for r in recent],
+                    "현재가": detail["price"],
+                    "등락률": detail["change_rate"],
+                    "52주고": detail["high52"],
+                    "52주저": detail["low52"],
+                    "총데이터일수": len(all_ohlcv),
+                    "20일전종가": all_ohlcv[-20]["close"] if len(all_ohlcv) >= 20 else None,
+                    "60일전종가": all_ohlcv[-60]["close"] if len(all_ohlcv) >= 60 else None,
+                    "120일전종가": all_ohlcv[-120]["close"] if len(all_ohlcv) >= 120 else None,
+                    "240일전종가": all_ohlcv[-240]["close"] if len(all_ohlcv) >= 240 else None,
+                }
+
+            supply_summary = {}
+            if detail.get("supply"):
+                supply_summary = {"최근수급": detail["supply"][-5:]}
+
+            yield {"event": "progress", "data": json.dumps({"stage": "ai", "msg": "Claude AI 세력 분석 중... (20~30초)"}, ensure_ascii=False)}
+            ai_result = await analyze_stock(
+                ticker=ticker,
+                name=detail["name"],
+                score_data=detail["score"],
+                ohlcv_summary=ohlcv_summary,
+                supply_summary=supply_summary,
+                whale_data=whale_data,
+                disclosures=disclosures,
+            )
+
+            store_analysis_cache(ticker, detail, ai_result, disclosures)
+
+            strategy = generate_strategy(
+                ticker=ticker,
+                name=detail["name"],
+                current_price=detail["price"],
+                score=detail["score"].get("total", 0),
+                high52=detail["high52"],
+                low52=detail["low52"],
+            )
+
+            payload = {
+                "ticker": ticker,
+                "detail": detail,
+                "ai_analysis": ai_result,
+                "strategy": strategy,
+                "disclosures": disclosures,
+                "whale_data": whale_data,
+                "timestamp": int(time.time() * 1000),
+            }
+            yield {"event": "done", "data": json.dumps(payload, ensure_ascii=False)}
+
+        except asyncio.TimeoutError:
+            yield {"event": "error", "data": json.dumps({"error": "분석 타임아웃 (60초 초과)"}, ensure_ascii=False)}
+        except Exception as e:
+            logger.error("분석 스트림 오류 %s: %s", ticker, e)
+            yield {"event": "error", "data": json.dumps({"error": str(e)}, ensure_ascii=False)}
+
+    return EventSourceResponse(generate())
+
+
 @app.get("/api/whale/summary")
 async def whale_summary():
     from kis_realtime import get_whale_summary
