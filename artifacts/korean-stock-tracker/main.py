@@ -601,6 +601,63 @@ async def portfolio_analyze(req: PortfolioRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "cache", "runtime_settings.json")
+
+
+def _load_persisted_settings() -> dict:
+    """디스크에서 저장된 설정 로드 — 재시작 후에도 복원됨"""
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # 저장된 API 키들을 환경 변수로 복원
+            for env_key, saved_key in [
+                ("KIS_APP_KEY",    "kis_app_key"),
+                ("KIS_APP_SECRET", "kis_app_secret"),
+                ("DART_API_KEY",   "dart_api_key"),
+                ("ANTHROPIC_API_KEY", "anthropic_api_key"),
+            ]:
+                val = data.get(saved_key)
+                if val and not os.getenv(env_key):
+                    os.environ[env_key] = val
+                    logger.info("저장된 설정 복원: %s", env_key)
+            return data
+    except Exception as e:
+        logger.warning("설정 파일 로드 실패: %s", e)
+    return {}
+
+
+def _save_persisted_settings():
+    """현재 설정을 디스크에 영구 저장"""
+    try:
+        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+        to_save = dict(_settings)
+        # API 키 값(노출 방지용 마스킹 없이 실제 값 저장 — 서버 로컬 파일)
+        for env_key, saved_key in [
+            ("KIS_APP_KEY",    "kis_app_key"),
+            ("KIS_APP_SECRET", "kis_app_secret"),
+            ("DART_API_KEY",   "dart_api_key"),
+            ("ANTHROPIC_API_KEY", "anthropic_api_key"),
+        ]:
+            val = os.getenv(env_key)
+            if val:
+                to_save[saved_key] = val
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(to_save, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning("설정 파일 저장 실패: %s", e)
+
+
+# 시작 시 디스크 설정 로드
+_persisted = _load_persisted_settings()
+_settings: dict = {
+    "kis_env": _persisted.get("kis_env", os.getenv("KIS_ENV", "PROD")),
+    "whale_small_threshold": _persisted.get("whale_small_threshold", 3_000_000),
+    "whale_medium_threshold": _persisted.get("whale_medium_threshold", 10_000_000),
+    "whale_large_threshold": _persisted.get("whale_large_threshold", 50_000_000),
+}
+
+
 class SettingsRequest(BaseModel):
     kis_env: Optional[str] = None
     whale_small_threshold: Optional[float] = None
@@ -610,14 +667,6 @@ class SettingsRequest(BaseModel):
     kis_app_key: Optional[str] = None
     kis_app_secret: Optional[str] = None
     dart_api_key: Optional[str] = None
-
-
-_settings: dict = {
-    "kis_env": os.getenv("KIS_ENV", "PROD"),
-    "whale_small_threshold": 3_000_000,
-    "whale_medium_threshold": 10_000_000,
-    "whale_large_threshold": 50_000_000,
-}
 
 
 @app.post("/api/settings")
@@ -632,12 +681,10 @@ async def update_settings(req: SettingsRequest):
         _settings["whale_large_threshold"] = req.whale_large_threshold
     if req.anthropic_api_key:
         os.environ["ANTHROPIC_API_KEY"] = req.anthropic_api_key
-        _settings["has_anthropic_key"] = True
-        logger.info("Anthropic API 키가 런타임에 설정되었습니다")
+        logger.info("Anthropic API 키 런타임 설정")
     if req.kis_app_key:
         os.environ["KIS_APP_KEY"] = req.kis_app_key
-        logger.info("KIS_APP_KEY가 런타임에 설정되었습니다")
-        # 토큰 캐시 초기화 (새 키로 재발급 유도)
+        logger.info("KIS_APP_KEY 런타임 설정")
         try:
             from kis_auth import _token_cache
             _token_cache["access_token"] = None
@@ -647,16 +694,17 @@ async def update_settings(req: SettingsRequest):
             pass
     if req.kis_app_secret:
         os.environ["KIS_APP_SECRET"] = req.kis_app_secret
-        logger.info("KIS_APP_SECRET이 런타임에 설정되었습니다")
+        logger.info("KIS_APP_SECRET 런타임 설정")
     if req.dart_api_key:
         os.environ["DART_API_KEY"] = req.dart_api_key
-        logger.info("DART_API_KEY가 런타임에 설정되었습니다")
-        # DART corp code 재로드 (백그라운드)
+        logger.info("DART_API_KEY 런타임 설정")
         try:
             from dart_client import _fetch_corp_codes
             asyncio.create_task(_fetch_corp_codes())
         except Exception:
             pass
+    # 변경사항 디스크에 즉시 저장
+    _save_persisted_settings()
     return {"success": True, "settings": _settings}
 
 
@@ -666,6 +714,7 @@ async def get_settings():
     result["has_anthropic_key"] = bool(
         os.getenv("ANTHROPIC_API_KEY") or os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL")
     )
+    result["anthropic_builtin"] = bool(os.getenv("AI_INTEGRATIONS_ANTHROPIC_BASE_URL"))
     result["has_kis_key"] = bool(os.getenv("KIS_APP_KEY"))
     result["has_kis_secret"] = bool(os.getenv("KIS_APP_SECRET"))
     result["has_dart_key"] = bool(os.getenv("DART_API_KEY"))

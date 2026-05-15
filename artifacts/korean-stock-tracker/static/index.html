@@ -275,7 +275,10 @@
       <!-- Anthropic API Key -->
       <div>
         <label class="text-xs text-gray-400 block mb-1.5"><i class="fas fa-robot mr-1 text-purple-500"></i>Anthropic API 키 (Claude AI 분석)</label>
-        <input id="anthropic-key-input" type="password" placeholder="sk-ant-api03-..." class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-gray-300 outline-none focus:border-purple-700 font-mono">
+        <div id="anthropic-builtin-notice" class="hidden w-full bg-purple-950 border border-purple-700 rounded px-3 py-2 text-xs text-purple-300">
+          🔒 Replit 내장 Claude AI 연결됨 — 별도 API 키 불필요
+        </div>
+        <input id="anthropic-key-input" type="password" placeholder="sk-ant-api03-... (내장 연결 실패 시만 입력)" class="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-gray-300 outline-none focus:border-purple-700 font-mono">
         <p class="text-xs mt-1.5" id="anthropic-key-status">확인 중...</p>
       </div>
       <button onclick="saveApiSettings()" class="w-full py-2 bg-cyan-900 border border-cyan-700 rounded text-sm neon-cyan hover:bg-cyan-800 font-bold">
@@ -801,7 +804,19 @@ async function refreshAllKeyStatuses() {
     _setKeyStatus('kis-key-status',    data.has_kis_key,      '설정됨 — 실시간 고래 추적 활성화', '미설정 — KIS App Key를 입력하세요');
     _setKeyStatus('kis-secret-status', data.has_kis_secret,   '설정됨', '미설정 — KIS App Secret을 입력하세요');
     _setKeyStatus('dart-key-status',   data.has_dart_key,     '설정됨 — 공시 조회 활성화', '미설정 — OpenDart API 키를 입력하세요');
-    _setKeyStatus('anthropic-key-status', data.has_anthropic_key, '설정됨 — Claude AI 분석 활성화', 'AI 분석이 제한됩니다. API 키를 입력하세요');
+
+    const builtinNotice = document.getElementById('anthropic-builtin-notice');
+    const anthropicInput = document.getElementById('anthropic-key-input');
+    if (data.anthropic_builtin) {
+      // Replit 내장 Claude — 입력 필드 숨기고 안내 표시
+      if (builtinNotice) builtinNotice.classList.remove('hidden');
+      if (anthropicInput) anthropicInput.classList.add('hidden');
+      _setKeyStatus('anthropic-key-status', true, 'Replit 내장 Claude AI 연결됨 (API 키 불필요)', '');
+    } else {
+      if (builtinNotice) builtinNotice.classList.add('hidden');
+      if (anthropicInput) anthropicInput.classList.remove('hidden');
+      _setKeyStatus('anthropic-key-status', data.has_anthropic_key, '설정됨 — Claude AI 분석 활성화', 'AI 분석이 제한됩니다. API 키를 입력하세요');
+    }
   } catch(e) {
     ['kis-key-status','kis-secret-status','dart-key-status','anthropic-key-status'].forEach(id => {
       const el = document.getElementById(id);
