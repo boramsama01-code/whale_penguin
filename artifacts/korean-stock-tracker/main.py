@@ -53,7 +53,19 @@ async def root():
     with open(html_path, "r", encoding="utf-8") as f:
         html = f.read()
     clerk_pk = os.getenv("CLERK_PUBLISHABLE_KEY", "")
-    html = html.replace("__CLERK_PK__", clerk_pk)
+    if clerk_pk:
+        html = html.replace("__CLERK_PK__", clerk_pk)
+    else:
+        # Clerk 키 없음 — 스크립트 태그 전체를 주석으로 교체 (JS 오류 방지, 게스트 모드)
+        _CLERK_BLOCK = (
+            '<script\n'
+            '  data-clerk-publishable-key="__CLERK_PK__"\n'
+            '  src="https://cdn.jsdelivr.net/npm/@clerk/clerk-js@5/dist/clerk.browser.js"\n'
+            '  crossorigin="anonymous"\n'
+            '></script>'
+        )
+        html = html.replace(_CLERK_BLOCK, '<!-- Clerk disabled: CLERK_PUBLISHABLE_KEY not set -->')
+        html = html.replace("__CLERK_PK__", "")
     return HTMLResponse(content=html)
 
 

@@ -146,7 +146,8 @@ async def scan_market(max_results: int = 50) -> list[dict]:
                         ohlcv = await asyncio.wait_for(get_ohlcv(item["ticker"], 60), timeout=15.0)
                         supply = await asyncio.wait_for(get_supply(item["ticker"], 20), timeout=10.0)
                         if ohlcv is not None and not ohlcv.empty:
-                            score_data = calculate_score(ohlcv, supply)
+                            mktcap = item.get("mktcap", 0) or 0
+                            score_data = calculate_score(ohlcv, supply, mktcap=mktcap)
                             item["score"] = round(score_data["total"], 2)
                             item["grade"] = score_data["grade"]
                         else:
@@ -272,7 +273,8 @@ async def _scan_market_pykrx(max_results: int = 50) -> list[dict]:
                     ohlcv = await asyncio.wait_for(get_ohlcv(item["ticker"], 60), timeout=15.0)
                     supply = await asyncio.wait_for(get_supply(item["ticker"], 20), timeout=10.0)
                     if ohlcv is not None and not ohlcv.empty:
-                        score_data = calculate_score(ohlcv, supply)
+                        mktcap = item.get("mktcap", 0) or 0
+                        score_data = calculate_score(ohlcv, supply, mktcap=mktcap)
                         item["score"] = round(score_data["total"], 2)
                         item["grade"] = score_data["grade"]
                     else:
@@ -349,8 +351,17 @@ async def get_stock_detail(ticker: str) -> Optional[dict]:
     current_price = float(closes[-1])
     change_rate = float((closes[-1] - closes[-2]) / closes[-2] * 100) if len(closes) >= 2 else 0.0
 
+    mktcap_val = 0.0
+    try:
+        from kis_data import get_current_price_kis
+        info2 = await get_current_price_kis(ticker)
+        if info2:
+            mktcap_val = info2.get("mktcap", 0) or 0
+    except Exception:
+        pass
+
     from scoring import calculate_score
-    score_data = calculate_score(ohlcv, supply)
+    score_data = calculate_score(ohlcv, supply, mktcap=mktcap_val, low52=low52, high52=high52)
 
     ohlcv_list = []
     for idx, row in ohlcv.tail(60).iterrows():
