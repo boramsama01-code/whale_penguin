@@ -13,7 +13,7 @@ paths = ["/"]
 PORT = "8000"
 
 [services.development]
-run = "cd artifacts/korean-stock-tracker && python main.py"
+run = "cd /home/runner/workspace/artifacts/korean-stock-tracker && python main.py"
 
 [services.production]
 deploymentTarget = "vm"
@@ -22,7 +22,7 @@ deploymentTarget = "vm"
 args = ["echo", "no build needed"]
 
 [services.production.run]
-args = ["python", "artifacts/korean-stock-tracker/main.py"]
+args = ["python", "/home/runner/workspace/artifacts/korean-stock-tracker/main.py"]
 
 [services.production.run.env]
 PORT = "8000"
