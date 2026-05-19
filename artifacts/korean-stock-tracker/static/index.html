@@ -13,6 +13,7 @@
   data-clerk-publishable-key="__CLERK_PK__"
   src="https://cdn.jsdelivr.net/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
   crossorigin="anonymous"
+  async
 ></script>
 <style>
   * { box-sizing: border-box; }
@@ -181,6 +182,7 @@
   /* 탭별 고유 활성 색상 */
   .tab-btn.active { border-bottom: 2px solid; }
   #tab-whale.active  { color: #06b6d4; border-bottom-color: #06b6d4; }
+  #tab-favorites.active { color: #facc15; border-bottom-color: #facc15; }
   #tab-scan.active   { color: #84cc16; border-bottom-color: #84cc16; }
   #tab-analyze.active { color: #a855f7; border-bottom-color: #a855f7; }
   #tab-portfolio.active { color: #ec4899; border-bottom-color: #ec4899; }
@@ -239,6 +241,9 @@
     </button>
     <button class="tab-btn py-2 text-sm font-mono whitespace-nowrap" onclick="switchTab('portfolio')" id="tab-portfolio">
       <i class="fas fa-briefcase mr-1"></i>내 포트폴리오
+    </button>
+    <button class="tab-btn py-2 text-sm font-mono whitespace-nowrap" onclick="switchTab('favorites')" id="tab-favorites">
+      <i class="fas fa-star mr-1"></i>즐겨찾기
     </button>
   </div>
 </header>
@@ -441,10 +446,11 @@
               <th class="sort-th text-center py-2 px-2 cursor-pointer" data-col="score" onclick="sortScan('score')">세력점수<span class="sort-icon"></span></th>
               <th class="sort-th text-center py-2 px-2 cursor-pointer" data-col="grade" onclick="sortScan('grade')">등급<span class="sort-icon"></span></th>
               <th class="text-center py-2 px-2">분석</th>
+              <th class="text-center py-2 px-2 text-yellow-700">★</th>
             </tr>
           </thead>
           <tbody id="scan-table-body">
-            <tr><td colspan="9" class="text-center text-gray-600 py-12">스캔 버튼을 눌러 세력 종목을 탐색하세요</td></tr>
+            <tr><td colspan="10" class="text-center text-gray-600 py-12">스캔 버튼을 눌러 세력 종목을 탐색하세요</td></tr>
           </tbody>
         </table>
       </div>
@@ -484,6 +490,8 @@
                 <div class="flex items-center gap-2">
                   <span id="res-ticker" class="neon-cyan text-lg font-bold"></span>
                   <span id="res-name" class="text-gray-400 text-sm"></span>
+                  <button id="res-fav-btn" class="fav-star text-gray-700 text-xl leading-none hover:scale-125 transition-transform ml-1" data-ticker="" data-name=""
+                    onclick="toggleFavorite(this.dataset.ticker, this.dataset.name, event)" title="즐겨찾기">☆</button>
                 </div>
                 <div class="flex items-center gap-3 mt-1">
                   <span id="res-price" class="text-2xl font-bold text-white"></span>
@@ -625,6 +633,19 @@
     </div>
   </div>
 
+  <!-- 탭5: 즐겨찾기 -->
+  <div id="tab-content-favorites" class="tab-content hidden">
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-yellow-400 text-sm font-bold"><i class="fas fa-star mr-2"></i>즐겨찾기</h2>
+        <span class="text-xs text-gray-600">★ 클릭으로 추가/해제 — 로그인 불필요, 기기에 저장됩니다</span>
+      </div>
+      <div id="favorites-list">
+        <div class="text-center text-gray-600 py-12 text-xs">즐겨찾기한 종목이 없습니다.<br>스캐너나 AI분석 결과의 ☆ 버튼으로 추가하세요.</div>
+      </div>
+    </div>
+  </div>
+
   <!-- 탭4: 포트폴리오 -->
   <div id="tab-content-portfolio" class="tab-content hidden relative">
     <!-- 비로그인 안내 배너 -->
@@ -686,6 +707,7 @@ const state = {
   portfolioRows: [],
   clerkUser: null,
   nickname: localStorage.getItem('krx_nickname') || '',
+  favorites: (() => { try { return JSON.parse(localStorage.getItem('krx_favorites') || '[]'); } catch(e) { return []; } })(),
 };
 
 const BASE = '';
@@ -698,9 +720,30 @@ let clerkInstance = null;
 
 async function initClerk() {
   try {
-    // Clerk JS CDN 로딩 대기 (최대 6초)
+    // 서버에서 Clerk 키 동적 조회 (HTML 캐싱 우회)
+    const cfg = await fetch('/api/config').then(r => r.json()).catch(() => ({}));
+    const pubKey = cfg.clerk_pk || '';
+    if (!pubKey || pubKey.length < 10) {
+      console.info('Clerk key 없음 — 게스트 모드');
+      return;
+    }
+
+    // Clerk JS CDN 동적 로딩 — data-clerk-publishable-key 속성 포함 필수
+    if (typeof window.Clerk === 'undefined') {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.setAttribute('data-clerk-publishable-key', pubKey);
+        s.src = 'https://cdn.jsdelivr.net/npm/@clerk/clerk-js@5/dist/clerk.browser.js';
+        s.crossOrigin = 'anonymous';
+        s.onload = resolve;
+        s.onerror = () => reject(new Error('Clerk CDN 로드 실패'));
+        document.head.appendChild(s);
+      });
+    }
+
+    // Clerk 인스턴스 준비 대기 (CDN이 window.Clerk 정의할 때까지)
     let waited = 0;
-    while (typeof window.Clerk === 'undefined' && waited < 6000) {
+    while (typeof window.Clerk === 'undefined' && waited < 8000) {
       await new Promise(r => setTimeout(r, 200));
       waited += 200;
     }
@@ -709,16 +752,11 @@ async function initClerk() {
       return;
     }
 
-    // 스크립트 태그에서 키 읽기 (서버가 __CLERK_PK__ 치환)
-    const scriptEl = document.querySelector('script[data-clerk-publishable-key]');
-    const pubKey = scriptEl?.getAttribute('data-clerk-publishable-key') || '';
-    if (!pubKey || pubKey === '__CLERK_PK__' || pubKey.length < 10) {
-      console.info('Clerk key 없음 — 게스트 모드');
-      return;
+    // CDN은 자동으로 인스턴스 생성 및 load() 호출 — 이미 로드됐으면 재사용
+    clerkInstance = window.Clerk;
+    if (!clerkInstance.loaded) {
+      await clerkInstance.load({ routerPush: () => {}, routerReplace: () => {} });
     }
-
-    clerkInstance = new window.Clerk(pubKey);
-    await clerkInstance.load({ routerPush: () => {}, routerReplace: () => {} });
 
     clerkInstance.addListener(({ user }) => {
       state.clerkUser = user || null;
@@ -935,6 +973,63 @@ function clearSessionData() {
   addChatMessage('system', 'KRX 고래 추적기 AI 애널리스트 준비 완료.\n종목 분석 후 채팅하면 해당 데이터 기반으로 답변합니다.');
 }
 
+// ===== FAVORITES =====
+function getFavorites() {
+  try { return JSON.parse(localStorage.getItem('krx_favorites') || '[]'); } catch(e) { return []; }
+}
+function _saveFavorites(favs) {
+  localStorage.setItem('krx_favorites', JSON.stringify(favs));
+  state.favorites = favs;
+}
+function isFavorite(ticker) {
+  return getFavorites().some(f => f.ticker === ticker);
+}
+function toggleFavorite(ticker, name, event) {
+  if (event) { event.stopPropagation(); event.preventDefault(); }
+  let favs = getFavorites();
+  const idx = favs.findIndex(f => f.ticker === ticker);
+  if (idx >= 0) {
+    favs.splice(idx, 1);
+  } else {
+    favs.unshift({ ticker, name: name || ticker, addedAt: Date.now() });
+    if (favs.length > 100) favs = favs.slice(0, 100);
+  }
+  _saveFavorites(favs);
+  const isFav = isFavorite(ticker);
+  document.querySelectorAll(`.fav-star[data-ticker="${ticker}"]`).forEach(btn => {
+    btn.textContent = isFav ? '★' : '☆';
+    if (isFav) { btn.classList.remove('text-gray-700', 'text-gray-600'); btn.classList.add('text-yellow-400'); btn.title = '즐겨찾기 해제'; }
+    else { btn.classList.remove('text-yellow-400'); btn.classList.add('text-gray-700'); btn.title = '즐겨찾기 추가'; }
+  });
+  if (state.currentTab === 'favorites') renderFavoritesList();
+}
+function renderFavoritesList() {
+  const el = document.getElementById('favorites-list');
+  if (!el) return;
+  const favs = getFavorites();
+  if (!favs.length) {
+    el.innerHTML = '<div class="text-center text-gray-600 py-12 text-xs">즐겨찾기한 종목이 없습니다.<br>스캐너나 AI분석 결과의 ☆ 버튼으로 추가하세요.</div>';
+    return;
+  }
+  el.innerHTML = favs.map(f => {
+    const safeName = (f.name || f.ticker).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return `
+    <div class="card p-3 flex items-center justify-between cursor-pointer hover:brightness-110 mb-2" onclick="quickAnalyzeByTicker('${f.ticker}')">
+      <div class="flex items-center gap-3">
+        <button class="fav-star text-yellow-400 text-xl leading-none hover:scale-125 transition-transform shrink-0"
+          data-ticker="${f.ticker}" data-name="${safeName}"
+          onclick="toggleFavorite('${f.ticker}', '${safeName}', event)" title="즐겨찾기 해제">★</button>
+        <div>
+          <div class="text-white font-bold text-sm">${f.name || f.ticker}</div>
+          <div class="text-gray-600 text-xs">${f.ticker}</div>
+        </div>
+      </div>
+      <button onclick="event.stopPropagation(); quickAnalyzeByTicker('${f.ticker}')"
+        class="px-3 py-1 border border-cyan-800 rounded text-cyan-600 hover:text-cyan-400 text-xs shrink-0">AI 분석</button>
+    </div>`;
+  }).join('');
+}
+
 // 닉네임 모달 외부 클릭 닫기
 document.getElementById('nickname-modal').addEventListener('click', e => {
   if (e.target === document.getElementById('nickname-modal')) {
@@ -950,6 +1045,7 @@ function switchTab(name) {
   document.getElementById('tab-content-' + name).classList.remove('hidden');
   document.getElementById('tab-' + name).classList.add('active');
   state.currentTab = name;
+  if (name === 'favorites') renderFavoritesList();
 }
 
 // ===== WHALE SUB-TABS =====
@@ -1333,12 +1429,14 @@ function sortScan(col) {
 function renderScanTable(results) {
   const tbody = document.getElementById('scan-table-body');
   if (!results?.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-gray-500 py-12">스캔 결과 없음<br><span class="text-xs text-gray-600">KRX 데이터는 장 시간(09:00~15:30 KST) 중 조회됩니다</span></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="text-center text-gray-500 py-12">스캔 결과 없음<br><span class="text-xs text-gray-600">KRX 데이터는 장 시간(09:00~15:30 KST) 중 조회됩니다</span></td></tr>';
     return;
   }
   tbody.innerHTML = results.map(r => {
     const changeClass = r.change_rate > 0 ? 'positive' : r.change_rate < 0 ? 'negative' : 'neutral';
     const changeSign = r.change_rate > 0 ? '+' : '';
+    const fav = isFavorite(r.ticker);
+    const safeName = (r.name || r.ticker).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     return `
       <tr class="ticker-row border-b border-gray-900" onclick="quickAnalyzeByTicker('${r.ticker}')">
         <td class="py-2 px-2"><div class="font-bold text-gray-200">${r.name}</div><div class="text-gray-600">${r.ticker}</div></td>
@@ -1360,6 +1458,12 @@ function renderScanTable(results) {
           <button onclick="event.stopPropagation(); quickAnalyzeByTicker('${r.ticker}')"
             class="px-2 py-0.5 border border-cyan-800 rounded text-cyan-600 hover:text-cyan-400 text-xs">분석</button>
         </td>
+        <td class="text-center py-2 px-2">
+          <button class="fav-star text-lg leading-none hover:scale-125 transition-transform ${fav ? 'text-yellow-400' : 'text-gray-700'}"
+            data-ticker="${r.ticker}"
+            onclick="event.stopPropagation(); toggleFavorite('${r.ticker}', '${safeName}', event)"
+            title="${fav ? '즐겨찾기 해제' : '즐겨찾기 추가'}">${fav ? '★' : '☆'}</button>
+        </td>
       </tr>`;
   }).join('');
 }
@@ -1370,7 +1474,7 @@ async function runScan() {
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>스캔 중...</span>';
   status.classList.remove('hidden');
-  document.getElementById('scan-table-body').innerHTML = '<tr><td colspan="9" class="text-center text-gray-600 py-12"><div class="spinner mx-auto mb-2"></div>코스피/코스닥 전 종목 스캔 중...</td></tr>';
+  document.getElementById('scan-table-body').innerHTML = '<tr><td colspan="10" class="text-center text-gray-600 py-12"><div class="spinner mx-auto mb-2"></div>코스피/코스닥 전 종목 스캔 중...</td></tr>';
   try {
     const res = await fetch(`${BASE}/api/scan`);
     if (!res.ok) throw new Error(await res.text());
@@ -1382,7 +1486,7 @@ async function runScan() {
     document.querySelectorAll('.sort-th').forEach(th => { th.classList.remove('asc','desc'); if (th.dataset.col === 'score') th.classList.add('desc'); });
     renderScanTable(state.scanData);
   } catch(e) {
-    document.getElementById('scan-table-body').innerHTML = `<tr><td colspan="9" class="text-center text-red-500 py-8">${e.message}</td></tr>`;
+    document.getElementById('scan-table-body').innerHTML = `<tr><td colspan="10" class="text-center text-red-500 py-8">${e.message}</td></tr>`;
   } finally {
     btn.disabled = false;
     btn.innerHTML = '<i class="fas fa-play"></i><span>스캔 실행</span>';
@@ -1530,6 +1634,16 @@ function renderAnalysis(data) {
 
   document.getElementById('res-ticker').textContent = d.ticker;
   document.getElementById('res-name').textContent = d.name;
+  const resFavBtn = document.getElementById('res-fav-btn');
+  if (resFavBtn) {
+    resFavBtn.dataset.ticker = d.ticker;
+    resFavBtn.dataset.name = d.name || d.ticker;
+    const isFav = isFavorite(d.ticker);
+    resFavBtn.textContent = isFav ? '★' : '☆';
+    if (isFav) { resFavBtn.classList.remove('text-gray-700'); resFavBtn.classList.add('text-yellow-400'); }
+    else { resFavBtn.classList.remove('text-yellow-400'); resFavBtn.classList.add('text-gray-700'); }
+    resFavBtn.title = isFav ? '즐겨찾기 해제' : '즐겨찾기 추가';
+  }
   document.getElementById('res-price').textContent = (d.price||0).toLocaleString() + '원';
   const chg = d.change_rate || 0;
   const chgEl = document.getElementById('res-change');

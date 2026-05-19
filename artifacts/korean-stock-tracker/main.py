@@ -66,7 +66,19 @@ async def root():
         )
         html = html.replace(_CLERK_BLOCK, '<!-- Clerk disabled: CLERK_PUBLISHABLE_KEY not set -->')
         html = html.replace("__CLERK_PK__", "")
-    return HTMLResponse(content=html)
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@app.get("/api/config")
+async def get_config():
+    clerk_pk = os.getenv("CLERK_PUBLISHABLE_KEY", "")
+    return {"clerk_pk": clerk_pk}
 
 
 @app.get("/api/search")
@@ -434,9 +446,9 @@ async def analyze_ticker_stream(ticker: str, request: Request):
                 ws, wr = score_whale_signal(whale_data)
                 detail["score"]["scores"]["H"] = ws
                 detail["score"]["reasons"]["H"] = wr
-                weights = detail["score"].get("weights", {"A":2,"B":1.5,"C":1.5,"D":1,"E":1,"F":2,"G":0.5,"H":2})
+                weights = detail["score"].get("weights", {"A":2.0,"B":1.5,"C":2.0,"D":1.0,"E":1.0,"F":2.0,"G":0.5,"H":2.0,"I":1.5})
                 total_weight = sum(weights.values())
-                weighted_sum = sum(detail["score"]["scores"][k] * weights.get(k,1) for k in detail["score"]["scores"])
+                weighted_sum = sum(detail["score"]["scores"][k] * weights.get(k, 1.0) for k in detail["score"]["scores"])
                 detail["score"]["total"] = round(weighted_sum / total_weight, 2)
 
             market_change_20d = 0.0
@@ -463,9 +475,9 @@ async def analyze_ticker_stream(ticker: str, request: Request):
                 _gs, _gr = score_relative_momentum(_odf, market_change_20d)
                 detail["score"]["scores"]["G"] = _gs
                 detail["score"]["reasons"]["G"] = _gr
-                _weights = detail["score"].get("weights", {"A":2,"B":1.5,"C":1.5,"D":1,"E":1,"F":2,"G":0.5,"H":2})
+                _weights = detail["score"].get("weights", {"A":2.0,"B":1.5,"C":2.0,"D":1.0,"E":1.0,"F":2.0,"G":0.5,"H":2.0,"I":1.5})
                 _tw = sum(_weights.values())
-                _ws = sum(detail["score"]["scores"][k] * _weights.get(k,1) for k in detail["score"]["scores"])
+                _ws = sum(detail["score"]["scores"][k] * _weights.get(k, 1.0) for k in detail["score"]["scores"])
                 detail["score"]["total"] = round(_ws / _tw, 2)
                 detail["score"]["grade"] = _grade(detail["score"]["total"])
 
@@ -473,13 +485,18 @@ async def analyze_ticker_stream(ticker: str, request: Request):
             if detail.get("ohlcv"):
                 recent = detail["ohlcv"][-5:]
                 all_ohlcv = detail["ohlcv"]
+                _cur = detail["price"]
+                _h52 = detail.get("high52", 0) or 0
+                _l52 = detail.get("low52", 0) or 0
                 ohlcv_summary = {
                     "최근5일종가": [r["close"] for r in recent],
                     "최근5일거래량": [r["volume"] for r in recent],
-                    "현재가": detail["price"],
+                    "현재가": _cur,
                     "등락률": detail["change_rate"],
-                    "52주고": detail["high52"],
-                    "52주저": detail["low52"],
+                    "52주고": _h52,
+                    "52주저": _l52,
+                    "52주저대비": round((_cur / _l52 - 1) * 100, 1) if _l52 > 0 else None,
+                    "52주고대비": round((_cur / _h52 - 1) * 100, 1) if _h52 > 0 else None,
                     "총데이터일수": len(all_ohlcv),
                     "20일전종가": all_ohlcv[-20]["close"] if len(all_ohlcv) >= 20 else None,
                     "60일전종가": all_ohlcv[-60]["close"] if len(all_ohlcv) >= 60 else None,

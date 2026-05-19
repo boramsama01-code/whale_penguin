@@ -103,10 +103,12 @@ async def scan_market(max_results: int = 50) -> list[dict]:
 
         logger.info("세력 스캐너 시작 (KIS API)")
 
-        # KOSPI + KOSDAQ 거래량 순위 동시 조회
-        kospi_list, kosdaq_list = await asyncio.gather(
+        # KOSPI + KOSDAQ 거래량 순위 + 시가총액 동시 조회
+        biz_dates = _recent_biz_dates(2)
+        kospi_list, kosdaq_list, cap_df_kis = await asyncio.gather(
             get_volume_rank_kis("J", 100),
             get_volume_rank_kis("Q", 100),
+            _bulk_mktcap_by_ticker(biz_dates[0]),
         )
 
         candidates = []
@@ -122,6 +124,16 @@ async def scan_market(max_results: int = 50) -> list[dict]:
             if item.get("vol_ratio", 0) < 1.5:
                 continue
             name = ticker_cache.get(t) or item.get("name") or t
+            # 시가총액: hts_avls 우선, 없으면 pykrx cap_df로 보완
+            mktcap = item.get("mktcap", 0) or 0
+            if mktcap == 0 and cap_df_kis is not None and not cap_df_kis.empty:
+                t_raw = t.lstrip("0") or t
+                for key in [t, t_raw]:
+                    if key in cap_df_kis.index:
+                        cap_col = next((c for c in ["시가총액"] if c in cap_df_kis.columns), None)
+                        if cap_col:
+                            mktcap = int(float(cap_df_kis.loc[key, cap_col] or 0))
+                            break
             candidates.append({
                 "ticker": t,
                 "name": name,
@@ -129,7 +141,7 @@ async def scan_market(max_results: int = 50) -> list[dict]:
                 "change_rate": item["change_rate"],
                 "volume": item["volume"],
                 "amount": int(item["amount"]),
-                "mktcap": 0,
+                "mktcap": mktcap,
                 "vol_ratio": item["vol_ratio"],
             })
 
@@ -147,7 +159,27 @@ async def scan_market(max_results: int = 50) -> list[dict]:
                         supply = await asyncio.wait_for(get_supply(item["ticker"], 20), timeout=10.0)
                         if ohlcv is not None and not ohlcv.empty:
                             mktcap = item.get("mktcap", 0) or 0
-                            score_data = calculate_score(ohlcv, supply, mktcap=mktcap)
+                            # 시가총액이 0이면 KIS inquire-price로 보완
+                            if mktcap == 0:
+                                try:
+                                    from kis_data import get_current_price_kis
+                                    _info = await asyncio.wait_for(get_current_price_kis(item["ticker"]), timeout=5.0)
+                                    if _info and _info.get("mktcap", 0):
+                                        mktcap = int(_info["mktcap"])
+                                        item["mktcap"] = mktcap
+                                        if _info.get("high52", 0):
+                                            item["high52"] = _info["high52"]
+                                        if _info.get("low52", 0):
+                                            item["low52"] = _info["low52"]
+                                except Exception:
+                                    pass
+                            try:
+                                _cc = next(c for c in ohlcv.columns if "종가" in str(c) or c == "Close")
+                                low52 = item.get("low52") or float(ohlcv[_cc].min())
+                                high52 = item.get("high52") or float(ohlcv[_cc].max())
+                            except Exception:
+                                low52, high52 = 0.0, 0.0
+                            score_data = calculate_score(ohlcv, supply, mktcap=mktcap, low52=low52, high52=high52)
                             item["score"] = round(score_data["total"], 2)
                             item["grade"] = score_data["grade"]
                         else:
@@ -198,6 +230,21 @@ async def _bulk_ohlcv_by_ticker(date_str: str, market: str = "ALL") -> Optional[
         return None
 
 
+async def _bulk_mktcap_by_ticker(date_str: str) -> Optional[pd.DataFrame]:
+    try:
+        from pykrx import stock as pykrx_stock
+        df = await asyncio.wait_for(
+            asyncio.to_thread(pykrx_stock.get_market_cap_by_ticker, date_str),
+            timeout=35.0
+        )
+        if df is None or (hasattr(df, 'empty') and df.empty):
+            return None
+        return df
+    except Exception as e:
+        logger.warning("bulk_mktcap %s 실패: %s", date_str, e)
+        return None
+
+
 async def _scan_market_pykrx(max_results: int = 50) -> list[dict]:
     """pykrx 기반 스캔 (한국 IP fallback)."""
     try:
@@ -211,9 +258,10 @@ async def _scan_market_pykrx(max_results: int = 50) -> list[dict]:
         async def _none():
             return None
 
-        today_df, yesterday_df = await asyncio.gather(
+        today_df, yesterday_df, cap_df = await asyncio.gather(
             _bulk_ohlcv_by_ticker(today_str),
-            _bulk_ohlcv_by_ticker(yesterday_str) if yesterday_str else _none()
+            _bulk_ohlcv_by_ticker(yesterday_str) if yesterday_str else _none(),
+            _bulk_mktcap_by_ticker(today_str),
         )
 
         if today_df is None or today_df.empty:
@@ -253,11 +301,16 @@ async def _scan_market_pykrx(max_results: int = 50) -> list[dict]:
             if vol_ratio < 1.5:
                 continue
             name = ticker_cache.get(ticker, ticker)
+            mktcap = 0
+            if cap_df is not None and not cap_df.empty and ticker_raw in cap_df.index:
+                cap_col = next((c for c in ['시가총액'] if c in cap_df.columns), None)
+                if cap_col:
+                    mktcap = int(float(cap_df.loc[ticker_raw, cap_col] or 0))
             candidates.append({
                 "ticker": ticker, "name": name,
                 "price": round(close), "change_rate": round(change_rate, 2),
                 "volume": int(today_vol), "amount": int(amount),
-                "mktcap": 0, "vol_ratio": vol_ratio,
+                "mktcap": mktcap, "vol_ratio": vol_ratio,
             })
 
         candidates.sort(key=lambda x: x["vol_ratio"], reverse=True)

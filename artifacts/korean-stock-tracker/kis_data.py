@@ -247,6 +247,7 @@ async def get_volume_rank_kis(market: str = "J", top_n: int = 100) -> list[dict]
                 amount = float(item.get("acml_tr_pbmn", 0) or 0)
                 if price <= 0 or amount < 100_000_000:
                     continue
+                mktcap_uk = float(item.get("hts_avls", 0) or 0)  # 억원
                 results.append({
                     "ticker": ticker,
                     "name": item.get("hts_kor_isnm", ""),
@@ -255,6 +256,7 @@ async def get_volume_rank_kis(market: str = "J", top_n: int = 100) -> list[dict]
                     "volume": int(float(item.get("acml_vol", 0) or 0)),
                     "amount": amount,
                     "vol_ratio": float(item.get("vol_inrt", 0) or 1.0),
+                    "mktcap": int(mktcap_uk * 100_000_000),
                 })
             except Exception:
                 continue

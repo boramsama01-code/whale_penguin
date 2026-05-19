@@ -221,38 +221,122 @@ async def analyze_stock(
 
     except asyncio.TimeoutError:
         logger.error("Claude 응답 타임아웃 (%s)", ticker)
-        return _fallback(score, "AI 응답 타임아웃")
+        return _fallback(score, "AI 응답 타임아웃", ohlcv_summary)
     except json.JSONDecodeError as e:
         logger.error("Claude JSON 파싱 실패 (%s): %s\n원본(마지막100자): %s", ticker, e, raw[-100:] if 'raw' in dir() else '')
-        return _fallback(score, f"AI 분석 실패 (응답 길이 부족)")
+        return _fallback(score, "AI 분석 실패 (응답 길이 부족)", ohlcv_summary)
     except Exception as e:
         logger.error("Claude 분석 오류 (%s): %s", ticker, e)
-        return _fallback(score, str(e))
+        return _fallback(score, str(e), ohlcv_summary)
 
 
-def _fallback(score: float, reason: str) -> dict:
+def _fallback(score: float, reason: str, ohlcv_summary: Optional[dict] = None) -> dict:
+    if any(kw in reason.lower() for kw in ["error code", "credit", "billing", "rate limit", "quota", "overload"]):
+        display_reason = "AI 분석 서비스 일시 불가 — 퀀트 점수 기반 자동 추정"
+    elif any(kw in reason.lower() for kw in ["timeout", "타임아웃", "timed out"]):
+        display_reason = "AI 응답 타임아웃 — 퀀트 점수 기반 자동 추정"
+    elif any(kw in reason.lower() for kw in ["key", "auth", "permission", "forbidden"]):
+        display_reason = "AI API 인증 오류 — 퀀트 점수 기반 자동 추정"
+    else:
+        short = reason[:50] if len(reason) > 50 else reason
+        display_reason = f"AI 분석 불가 ({short}) — 퀀트 점수 기반 자동 추정"
+
+    if score >= 7.5:
+        stage, confidence, pumping, entry_rec = "매집완료", "보통", True, True
+        pattern = f"퀀트 종합점수 {score:.1f}점 — 강한 매집 신호 다수 감지. 세력 매집 완료 단계로 추정됩니다."
+        reason_text = f"세력점수 {score:.1f}/10 고점대 — 거래량 이상·수급 집중·기술지표 복합 신호 동시 감지. 매집 완료 구간 추정."
+    elif score >= 6.0:
+        stage, confidence, pumping, entry_rec = "매집중기", "보통", False, True
+        pattern = f"퀀트 종합점수 {score:.1f}점 — 매집 중기 단계 신호. 지속적 수급 집중 패턴 감지."
+        reason_text = f"세력점수 {score:.1f}/10 상위권 — 수급 신뢰도 및 거래량 이상 지표 동반 상승. 중기 매집 가능성 높음."
+    elif score >= 4.5:
+        stage, confidence, pumping, entry_rec = "매집초기", "낮음", False, False
+        pattern = f"퀀트 종합점수 {score:.1f}점 — 초기 매집 가능성 있으나 추가 확인 필요."
+        reason_text = f"세력점수 {score:.1f}/10 중위권 — 일부 매집 신호 감지. 추이 추가 관찰 권고."
+    elif score >= 2.5:
+        stage, confidence, pumping, entry_rec = "관망", "낮음", False, False
+        pattern = f"퀀트 종합점수 {score:.1f}점 — 뚜렷한 세력 신호 미감지. 관망 구간."
+        reason_text = f"세력점수 {score:.1f}/10 하위권 — 유의미한 세력 활동 신호 부재."
+    else:
+        stage, confidence, pumping, entry_rec = "관망", "낮음", False, False
+        pattern = f"퀀트 종합점수 {score:.1f}점 — 세력 활동 없음 또는 분산 단계."
+        reason_text = f"세력점수 {score:.1f}/10 저점 — 세력 매집 신호 없음."
+
+    # ── 가격 추정 (OHLCV 데이터 기반) ──────────────────────────────────
+    def _round_price(p: float) -> int:
+        """100원 단위 반올림"""
+        if p <= 0:
+            return 0
+        if p < 1000:
+            return max(1, round(p / 10) * 10)
+        if p < 10000:
+            return round(p / 100) * 100
+        return round(p / 500) * 500
+
+    acc_data: dict = {"추정여부": False, "하단": None, "상단": None, "근거": display_reason}
+    tgt_data: dict = {"단기": None, "중기": None, "근거": display_reason}
+
+    if ohlcv_summary and entry_rec:
+        price  = ohlcv_summary.get("현재가", 0) or 0
+        high52 = ohlcv_summary.get("52주고", 0) or 0
+        low52  = ohlcv_summary.get("52주저", 0) or 0
+        p60    = ohlcv_summary.get("60일전종가", 0) or 0
+        p120   = ohlcv_summary.get("120일전종가", 0) or 0
+        p240   = ohlcv_summary.get("240일전종가", 0) or 0
+
+        if price > 0:
+            # 매집가격대: 52주저와 최근 역사적 저점들의 중간 구간
+            candidate_lows = [v for v in [low52, p60, p120, p240] if v > 0]
+            if candidate_lows:
+                bottom = min(candidate_lows)
+                # 상단 = 현재가와 저점들의 중간값 (매집이 이뤄진 구간 상단)
+                mid = (bottom + price) / 2
+                acc_lower = _round_price(bottom * 1.02)
+                acc_upper = _round_price(mid)
+                if acc_lower < acc_upper and acc_lower > 0:
+                    acc_data = {
+                        "추정여부": True,
+                        "하단": acc_lower,
+                        "상단": acc_upper,
+                        "근거": f"52주 저점({_round_price(low52):,}원)~현재가 중간 구간 기술적 추정 (AI 미사용)",
+                    }
+
+            # 목표가격대
+            if high52 > price:
+                short_tgt = _round_price(price + (high52 - price) * 0.4)
+                mid_tgt   = _round_price(high52 * 0.97)
+            else:
+                short_tgt = _round_price(price * 1.10)
+                mid_tgt   = _round_price(price * 1.25)
+            tgt_data = {
+                "단기": short_tgt,
+                "중기": mid_tgt,
+                "근거": f"52주 고점({_round_price(high52):,}원) 기반 기술적 목표가 추정 (AI 미사용)",
+            }
+
+    up_dir = "상승" if entry_rec else "횡보"
     return {
         "종합점수": score,
-        "세력단계": "관망",
-        "신뢰도": "낮음",
-        "분석기간": "N/A",
-        "장기패턴": reason,
-        "매집가격대": {"추정여부": False, "하단": None, "상단": None, "근거": reason},
-        "목표가격대": {"단기": None, "중기": None, "근거": reason},
+        "세력단계": stage,
+        "신뢰도": confidence,
+        "분석기간": "퀀트 자동 추정",
+        "장기패턴": pattern,
+        "매집가격대": acc_data,
+        "목표가격대": tgt_data,
         "예상전망": {
-            "1일": {"방향": "횡보", "확률": 0, "근거": reason},
-            "1주": {"방향": "횡보", "확률": 0, "근거": reason},
-            "1달": {"방향": "횡보", "확률": 0, "근거": reason},
-            "6개월": {"방향": "횡보", "확률": 0, "근거": reason},
-            "1년": {"방향": "횡보", "확률": 0, "근거": reason},
+            "1일": {"방향": "횡보", "확률": 50, "근거": display_reason},
+            "1주": {"방향": up_dir, "확률": 55 if entry_rec else 45, "근거": display_reason},
+            "1달": {"방향": up_dir, "확률": 60 if score >= 7.5 else (55 if entry_rec else 45), "근거": display_reason},
+            "6개월": {"방향": up_dir if score >= 6.0 else "횡보", "확률": 55 if entry_rec else 45, "근거": display_reason},
+            "1년": {"방향": "횡보", "확률": 50, "근거": display_reason},
         },
-        "펌핑가능성": False,
-        "펌핑근거": reason,
-        "진입추천": False,
-        "리스크요인": [reason],
-        "핵심근거": f"AI 분석 실패: {reason}",
+        "펌핑가능성": pumping,
+        "펌핑근거": "퀀트 점수 기반 추정 (실제 AI 분석 시 갱신 필요)" if pumping else "없음",
+        "진입추천": entry_rec,
+        "리스크요인": ["AI 분석 부재로 정확도 제한", "퀀트 점수만으로 최종 판단 지양"],
+        "핵심근거": reason_text,
         "ai_called": True,
-        "error": reason,
+        "_fallback": True,
     }
 
 

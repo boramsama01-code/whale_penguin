@@ -1,0 +1,830 @@
+저점 매집 구간을 **사전에** 포착하려면:
+
+1. **거래량 이상 미탐지 구간** - 평소보다 살짝 많은 거래량이 수주째 지속
+2. **장기 횡보 + 조금씩 저점이 높아지는 패턴**
+3. **공시 없는데 주가가 안 빠지는 종목**
+4. **외국인/기관 소량 지속 매수 누적**
+5. **52주 신저가 부근에서 거래량 바닥 다지기**
+
+# 퀀트 + 세력분석 결합 앱 설계 가이드
+
+---
+
+# 📱 전체 메뉴 구조
+
+```
+├── 1. 홈 (대시보드)
+├── 2. 종목 스캐너 (퀀트 스크리닝)
+├── 3. AI 종목 분석 (세력 분석) ← 현재 기능
+├── 4. 포트폴리오 관리
+├── 5. 마켓 레이더 (시장 흐름)
+└── 6. 알림 센터
+```
+
+---
+
+# 메뉴 1. 🏠 홈 (대시보드)
+
+## 기능 구성
+```
+┌─────────────────────────────┐
+│ 오늘의 시장 요약              │
+│ 코스피/코스닥 현황            │
+├─────────────────────────────┤
+│ 세력 포착 긴급 신호 TOP 3     │
+│ (오늘 고래 신호 발생 종목)    │
+├─────────────────────────────┤
+│ 퀀트 스크리너 추천 종목 TOP 5 │
+├─────────────────────────────┤
+│ 내 관심종목 수익률 요약       │
+└─────────────────────────────┘
+```
+
+## 필요 알고리즘/데이터
+```python
+# 시장 요약
+- KRX API → KOSPI/KOSDAQ 지수, 등락률
+- 업종별 등락 히트맵
+
+# 긴급 세력 신호
+- 실시간 거래량 이상 감지
+  조건: 거래량 > 20일평균 * 3배 AND 주가 > 전일종가 * 1.05
+- 고래 신호: 단일 체결 5억 이상 연속 3회
+
+# 퀀트 추천
+- 전일 스크리닝 결과 캐싱
+- 상위 5개 종목 점수 기반 정렬
+```
+
+---
+
+# 메뉴 2. 🔍 종목 스캐너 (핵심 신메뉴)
+
+## 2-1. 퀀트 팩터 스크리너
+
+### UI 구성
+```
+[조건 설정 탭]
+─────────────────────────
+가치 팩터
+  □ PER 10 이하
+  □ PBR 1 이하  
+  □ ROE 15% 이상
+
+모멘텀 팩터
+  □ 3개월 수익률 상위 20%
+  □ 52주 저가 대비 +20% 이내
+  □ 거래량 평균 이하 (눌림목)
+
+변동성 팩터
+  □ 20일 변동성 수축 구간
+  □ 볼린저밴드 수축 (Squeeze)
+
+수급 팩터
+  □ 기관 순매수 5일 연속
+  □ 외국인 순매수 3일 연속
+─────────────────────────
+[스캔 실행] 버튼
+```
+
+### 필요 알고리즘
+```python
+# 팩터 스코어 계산 (Z-Score 정규화)
+def calculate_factor_score(stock_universe):
+    
+    # 1. 가치 팩터
+    value_score = (
+        -normalize(PER) * 0.3 +    # PER 낮을수록 좋음
+        -normalize(PBR) * 0.3 +    # PBR 낮을수록 좋음
+        normalize(ROE) * 0.4        # ROE 높을수록 좋음
+    )
+    
+    # 2. 모멘텀 팩터
+    momentum_score = (
+        normalize(return_3m) * 0.4 +
+        normalize(return_1m) * 0.3 +
+        normalize(volume_ratio) * 0.3
+    )
+    
+```python
+    # 3. 퀄리티 팩터
+    quality_score = (
+        normalize(operating_margin) * 0.5 +
+        -normalize(debt_ratio) * 0.5  # 부채 낮을수록 좋음
+    )
+    
+    # 4. 수급 팩터 (한국 시장 특화)
+    supply_score = (
+        normalize(institution_buy_5d) * 0.4 +
+        normalize(foreign_buy_5d) * 0.4 +
+        normalize(short_ratio_change) * 0.2  # 공매도 감소 좋음
+    )
+    
+    # 5. 최종 통합 점수
+    total_score = (
+        value_score * 0.25 +
+        momentum_score * 0.30 +
+        quality_score * 0.20 +
+        supply_score * 0.25
+    )
+    
+    return total_score.rank(ascending=False)
+
+# 필요 데이터 소스
+DATA_SOURCES = {
+    "재무데이터": "DART OpenAPI / KRX 통계",
+    "주가/거래량": "KRX API / 증권사 API",
+    "수급": "KRX 투자자별 매매동향",
+    "공매도": "KRX 공매도 통계"
+}
+```
+
+---
+
+## 2-2. 세력 스캐너 (실시간)
+
+### UI 구성
+```
+[실시간 세력 포착 탭]
+─────────────────────────────
+🔴 긴급 고래 신호     [3종목]
+🟠 박스권 돌파 감지   [7종목]
+🟡 거래량 이상 급증   [12종목]
+🟢 기관 매집 의심     [5종목]
+─────────────────────────────
+정렬: 세력점수순 | 거래량순 | 등락률순
+```
+
+### 필요 알고리즘
+```python
+# 고래 신호 감지
+def detect_whale_signal(trade_data):
+    signals = []
+    
+    # 1. 단일 대량 체결 감지
+    large_trades = trade_data[
+        trade_data['amount'] > 500_000_000  # 5억 이상
+    ]
+    
+    # 2. 연속 대량 체결 (같은 방향 3회 이상)
+    consecutive = large_trades.groupby('direction').rolling(3).count()
+    
+    # 3. 전체 거래대금 대비 비율
+    whale_ratio = large_trades['amount'].sum() / trade_data['amount'].sum()
+    
+    if whale_ratio > 0.3:  # 30% 이상이 고래 거래
+        signals.append({
+            'type': '긴급고래',
+            'amount': large_trades['amount'].sum(),
+            'count': len(large_trades)
+        })
+    
+    return signals
+
+# 박스권 돌파 감지
+def detect_box_breakout(price_data, window=20):
+    
+    # 박스권 상단/하단 계산
+    box_high = price_data['high'].rolling(window).max()
+    box_low = price_data['low'].rolling(window).min()
+    box_range = (box_high - box_low) / box_low
+    
+    # 횡보 구간 (변동폭 10% 이내)
+    is_consolidation = box_range < 0.10
+    
+    # 돌파 감지
+    breakout = (
+        price_data['close'] > box_high.shift(1) and
+        is_consolidation.rolling(5).sum() >= 4  # 최근 5일 중 4일 횡보
+    )
+    
+    # 거래량 동반 확인
+    volume_confirm = (
+        price_data['volume'] > price_data['volume'].rolling(20).mean() * 2
+    )
+    
+    return breakout & volume_confirm
+```
+
+---
+
+> # 2-3. 통합 스코어링 (퀀트 + 세력 결합)
+
+### 핵심 아이디어
+```
+┌──────────────────────────────────────┐
+│         통합 점수 산출 구조            │
+│                                      │
+│  퀀트 점수 (40%)  +  세력 점수 (60%)  │
+│                                      │
+│  ├─ 가치팩터 10%     ├─ 고래신호 20%  │
+│  ├─ 모멘텀팩터 15%   ├─ 박스돌파 15%  │
+│  ├─ 퀄리티팩터 10%   ├─ 거래량 15%   │
+│  └─ 수급팩터 5%      └─ 기술지표 10%  │
+└──────────────────────────────────────┘
+```
+
+### 알고리즘
+```python
+def integrated_score(quant_score, force_score, market_phase):
+    
+    # 시장 국면에 따라 가중치 동적 조절
+    if market_phase == "상승장":
+        w_quant, w_force = 0.35, 0.65  # 세력 비중 증가
+    elif market_phase == "하락장":
+        w_quant, w_force = 0.55, 0.45  # 퀀트(방어) 비중 증가
+    else:  # 횡보장
+        w_quant, w_force = 0.45, 0.55
+
+    final = quant_score * w_quant + force_score * w_force
+    
+    # 등급 분류
+    grade = (
+        "S" if final >= 8.5 else
+        "A" if final >= 7.0 else
+        "B" if final >= 5.5 else
+        "C"
+    )
+    return final, grade
+
+# 센서뷰 적용 예시
+# 세력점수: 6.4 → 퀀트점수 추정 필요
+# 고래신호 10.0, 박스돌파 10.0 → 세력 측면은 강력
+# 수급신뢰도 0.0 → 퀀트 점수 하락 요인
+```
+
+---
+
+# 메뉴 3. 🤖 AI 종목 분석 (기존 기능 고도화)
+
+## 3-1. 현재 기능 유지 + 퀀트 레이어 추가
+
+### 센서뷰(321370) 분석 화면 예시
+```
+┌─────────────────────────────────────┐
+│ 센서뷰 321370        +15.33%        │
+│ 현재가: 4,250원                     │
+├─────────────────────────────────────┤
+│ 세력점수: 6.4/10 [A등급]            │
+│ ████████░░ 고래신호 긴급 발동        │
+├─────────────────────────────────────┤
+│ 퀀트점수: 산출중 (재무데이터 연동)   │
+│ ★ 추가: PER/PBR/ROE 자동 표시       │
+├─────────────────────────────────────┤
+│ 통합등급: A | 단기펌핑 가능성 HIGH   │
+│ ⚠️ 진입추천: 비추천 (고점 추격 위험) │
+└─────────────────────────────────────┘
+```
+
+ 3-2. 퀀트 재무 레이어 (센서뷰 321370 적용)
+
+```python
+def add_quant_layer(ticker="321370"):
+    
+    # DART API로 재무 자동 조회
+    financial = dart_api.get_financial(ticker)
+    
+    quant_metrics = {
+        "PER": financial['market_cap'] / financial['net_income'],
+        "PBR": financial['market_cap'] / financial['book_value'],
+        "ROE": financial['net_income'] / financial['equity'],
+        "영업이익률": financial['op_income'] / financial['revenue'],
+        "부채비율": financial['debt'] / financial['equity'],
+        "매출성장률": (financial['revenue'] - financial['revenue_prev'])
+                      / financial['revenue_prev'] * 100
+    }
+    
+    # 세력 분석 데이터와 결합
+    force_data = {
+        "세력점수": 6.4,
+        "고래신호": 10.0,   # 긴급 1조 3,571억
+        "박스돌파": 10.0,   # +15.3%
+        "업종모멘텀": 10.0  # 시장 대비 +40.3%
+    }
+    
+    return {**quant_metrics, **force_data}
+```
+
+> # 수급신뢰도 알고리즘 개선 방안
+
+## 🔍 현재 문제 진단
+
+센서뷰 같은 **코스닥 소형주**는 기관/외국인 수급 데이터가 거의 없어서 수급신뢰도가 0.0으로 나오는 구조적 문제입니다.
+
+---
+
+## 💻 알고리즘 개선 방향
+
+### 1️⃣ 현재 구조 (문제)
+```python
+# 현재 방식 — 기관/외국인 데이터 없으면 그냥 0점
+def calc_수급신뢰도(기관순매수, 외국인순매수):
+    if 기관순매수 is None or 외국인순매수 is None:
+        return 0.0  # ← 이게 문제
+```
+
+---
+
+### 2️⃣ 개선안 A — 대체 수급 지표 활용
+```python
+def calc_수급신뢰도_v2(data):
+    score = 0.0
+    weight_total = 0
+    
+    # 기존: 기관/외국인 (데이터 있을 때만)
+    if data.get('기관순매수') is not None:
+        score += 기관점수 * 0.4
+        weight_total += 0.4
+        
+    if data.get('외국인순매수') is not None:
+        score += 외국인점수 * 0.3
+        weight_total += 0.3
+    
+    # ✅ 추가: 대체 수급 지표들
+    # 1. 거래량 연속성 (세력 매집 신호)
+    if data.get('거래량연속증가일') >= 3:
+        score += 7.0 * 0.1
+        weight_total += 0.1
+    
+    # 2. 상승일 거래량 vs 하락일 거래량 비율
+    if data.get('OBV_trend') == 'UP':
+        score += 8.0 * 0.1
+        weight_total += 0.1
+    
+    # 3. 장중 체결강도 (매수세 우위)
+    체결강도 = data.get('체결강도', 100)
+    if 체결강도 > 110:
+        score += min((체결강도 - 100) / 5, 10) * 0.1
+        weight_total += 0.1
+    
+    # weight 정규화
+    if weight_total > 0:
+        return round(score / weight_total, 1)
+    return 0.0
+```
+
+---
+
+### 3️⃣ 개선안 B — 소형주 전용 수급 스코어링
+```python
+def calc_소형주_수급(data):
+    """
+    기관/외국인 데이터 없는 소형주용
+    거래 패턴으로 세력 수급 추정
+    """
+    score = 0
+    
+    # ① OBV (On Balance Volume) 방향
+    # 가격 오를 때 거래량 많으면 매수 수급 우위
+    obv_score = calc_OBV_score(data['prices'], data['volumes'])
+    score += obv_score * 30  # 30점 배분
+    
+    # ② 가격대별 거래량 프로파일
+    # 현재가 위에 매물대 없으면 저항 적음 = 수급 양호
+    매물대저항 = data.get('상단매물대_강도', 5)
+    score += (10 - 매물대저항) * 2  # 최대 20점
+    
+    # ③ 연속 양봉일수
+    연속양봉 = data.get('연속양봉일수', 0)
+    score += min(연속양봉 * 5, 20)  # 최대 20점
+    
+    # ④ 시간외 거래 강도 (가능하면)
+    시간외 = data.get('시간외순매수율', 0)
+    score += min(시간외 * 10, 15)  # 최대 15점
+    
+    # ⑤ 호가 잔량 비율 (매수호가 > 매도호가
+user@krx:~$ 이어서 계속 말해줘
+> ### ⑤ 이어서 — 호가잔량 비율
+
+```python
+    # ⑤ 호가 잔량 비율 (매수호가 > 매도호가 = 수급 양호)
+    매수호가잔량 = data.get('매수호가총잔량', 0)
+    매도호가잔량 = data.get('매도호가총잔량', 1)
+    호가비율 = 매수호가잔량 / 매도호가잔량
+    
+    if 호가비율 > 1.5:
+        score += 15  # 매수세 강함
+    elif 호가비율 > 1.0:
+        score += 8
+    else:
+        score += 0   # 매도 우위
+    
+    return round(min(score, 100) / 10, 1)  # 10점 만점으로 변환
+```
+
+---
+
+### 4️⃣ 개선안 C — 종목 유형별 분기 처리 (핵심)
+
+```python
+def calc_수급신뢰도_통합(data, 종목유형=None):
+    """
+    종목 유형에 따라 수급 계산 방식 자동 분기
+    """
+    
+    # 종목 유형 자동 판별
+    if 종목유형 is None:
+        시가총액 = data.get('시가총액', 0)
+        기관데이터유무 = data.get('기관순매수') is not None
+        
+        if 시가총액 > 1_000_000_000_000:  # 1조 이상
+            종목유형 = 'LARGE'   # 대형주
+        elif 기관데이터유무:
+            종목유형 = 'MID'     # 중형주
+        else:
+            종목유형 = 'SMALL'   # 소형주 (센서뷰 해당)
+    
+    # 유형별 분기
+    if 종목유형 == 'LARGE':
+        return calc_대형주_수급(data)    # 기관/외국인 중심
+        
+    elif 종목유형 == 'MID':
+        return calc_중형주_수급(data)    # 혼합 방식
+        
+    elif 종목유형 == 'SMALL':
+        return calc_소형주_수급(data)    # 대체 지표 중심
+        
+    return 0.0
+```
+
+---
+
+### 5️⃣ 소형주 수급 — 실전 적용 스코어 테이블
+
+```
+센서뷰 현재 데이터 기준 시뮬레이션:
+
+① OBV 방향          → 상승 중 거래량 급증  = +28/30점
+② 매물대 저항        → 52주 고점 5,140원   = +12/20점
+③ 연속 양봉         → 최근 급등 흐름       = +15/20점
+④ 시간외 거래        → 데이터 미확인        = + 0/15점
+⑤ 호가 잔량         → 데이터 미확인        = + 0/15점
+
+소계: 55/100 → 5.5/10점
+────────────────────────────────
+현재 수급신뢰도 0.0 → 개선 후 5.5로 상향 가능
+```
+
+---
+
+## 🛠️ 실제 코드에 반영할 우선순위
+
+```
+Priority 1 (즉시 적용 가능)
+─────────────────────────────
+✅ OBV 트렌드 계산 추가
+   → prices + volumes 데이터로 바로 계산 가능
+   → 별도 API 불필요
+
+✅ 연속 양봉일수 카운팅
+   → 이미 캔들 데이터 있으면 바로 적용 가능
+
+✅ 거래량 상승/하락 비율
+   → 상승일 평균거래량 vs 하락일 평균거래량
+
+Priority 2 (API 연동 필요)
+─────────────────────────────
+🔧 호가 잔량 비율
+   → 실시간 호가 API 필요 (한국투자증권 
+user@krx:~$ 이어서
+> ## Priority 2 이어서 — API 연동 필요 항목
+
+```python
+🔧 호가 잔량 비율
+   → 실시간 호가 API 필요 (한국투자증권 WebSocket)
+   → ws://ops.koreainvestment.com:21000
+   → TR: H0STASP0 (호가 실시간)
+
+🔧 시간외 거래 강도
+   → 장 마감 후 시간외 단일가 데이터
+   → KIS API: FHKST03010200 (시간외 체결)
+
+Priority 3 (고도화 단계)
+─────────────────────────────
+🔬 체결강도 실시간 누적
+   → 매수체결 vs 매도체결 비율
+   → 장중 1분봉 기준 누적 계산
+   
+🔬 프로그램 매매 비율
+   → 기관 없어도 프로그램 매매는 별도 집계
+   → KRX data.krx.co.kr API 활용 가능
+```
+
+---
+
+## 📊 센서뷰 실전 적용 시뮬레이션
+
+**현재 데이터 기준으로 개선된 알고리즘 적용 시:**
+
+```
+센서뷰 (321370) 수급신뢰도 재계산
+─────────────────────────────────────
+
+① OBV 트렌드
+   60일 +57% 상승 + 거래량 2.4배 집중
+   → 상승 시 거래량 폭발 = 강한 매수 수급
+   → 점수: 27/30점
+
+② 매물대 저항
+   52주 고점 5,140원까지 약 21% 여유
+   현재가 4,250원 위에 매물대 얇음
+   → 점수: 14/20점
+
+③ 연속 양봉
+   박스권 +15.3% 돌파 + 오늘 +15.33%
+   단기 강한 양봉 흐름
+   → 점수: 15/20점
+
+④ 시간외 거래
+   현재 데이터 없음
+   → 점수: 0/15점 (API 연동 후 채울 수 있음)
+
+⑤ 호가 잔량
+   현재 데이터 없음
+   → 점수: 0/15점 (실시간 연동 후 채울 수 있음)
+
+─────────────────────────────────────
+합계: 56/100점 → 5.6/10점
+현재: 0.0 → 개선 후: 5.6
+─────────────────────────────────────
+```
+
+---
+
+## 🔧 실제 코드 구조 — 최종 통합본
+
+```python
+class 수급신뢰도_계산기:
+    
+    def __init__(self, data):
+        self.data = data
+        self.시가총액 = data.get('시가총액', 0)
+        self.기관데이터 = data.get('기관순매수')
+        self.외국인데이터 = data.get('외국인순매수')
+    
+    def 종목유형_판별(self):
+        if self.기관데이터 is not None and self.시가총액 > 1e12:
+            return 'LARGE'
+        elif self.기관데이터 is not None:
+            return 'MID'
+        else:
+            return 'SMALL'   # 센서뷰 해당
+    
+    def calc_OBV_score(self):
+        """상승일 거래량 vs 하락일 거래량"""
+        prices = self.data.get('prices', [])
+        volumes = self.data.get('volumes', [])
+        
+        상승일_거래량 = []
+        하락일_거래량 = []
+        
+        for i in range(1, len(prices)):
+            if prices[i] > prices[i-1]:
+                상승일_거래량.append(volumes[i])
+            elif prices[i] < prices[i-1]:
+                하락일_거래량.append(volumes[i])
+        
+        if not 상승일_거래량 or not 하락일_거래량:
+            return 15  # 중립
+            
+        상승평균 =
+user@krx:~$ 이어서
+> ## calc_OBV_score 이어서
+
+```python
+    def calc_OBV_score(self):
+        """상승일 거래량 vs 하락일 거래량"""
+        prices = self.data.get('prices', [])
+        volumes = self.data.get('volumes', [])
+        
+        상승일_거래량 = []
+        하락일_거래량 = []
+        
+        for i in range(1, len(prices)):
+            if prices[i] > prices[i-1]:
+                상승일_거래량.append(volumes[i])
+            elif prices[i] < prices[i-1]:
+                하락일_거래량.append(volumes[i])
+        
+        if not 상승일_거래량 or not 하락일_거래량:
+            return 15  # 중립
+            
+        상승평균 = sum(상승일_거래량) / len(상승일_거래량)
+        하락평균 = sum(하락일_거래량) / len(하락일_거래량)
+        
+        비율 = 상승평균 / 하락평균 if 하락평균 > 0 else 1.0
+        
+        # 센서뷰 시뮬레이션:
+        # 60일 +57% 상승 + 거래량 2.4배 집중
+        # → 상승평균 / 하락평균 ≈ 2.1 예상
+        
+        if 비율 >= 2.0:
+            return 28    # 강한 매수 수급
+        elif 비율 >= 1.5:
+            return 22
+        elif 비율 >= 1.2:
+            return 17
+        elif 비율 >= 1.0:
+            return 12
+        else:
+            return 5     # 매도 수급 우위
+    
+    def calc_연속양봉_score(self):
+        """최근 N일 양봉 비율"""
+        prices = self.data.get('prices', [])
+        
+        if len(prices) < 5:
+            return 0
+            
+        # 최근 10거래일 양봉 카운트
+        최근10일 = prices[-11:]
+        양봉수 = sum(
+            1 for i in range(1, len(최근10일))
+            if 최근10일[i] > 최근10일[i-1]
+        )
+        
+        # 센서뷰: 오늘 +15.33% + 박스권 돌파
+        # → 최근 10일 중 7일 이상 양봉 예상
+        
+        if 양봉수 >= 8:
+            return 20
+        elif 양봉수 >= 6:
+            return 15
+        elif 양봉수 >= 4:
+            return 10
+        else:
+            return 3
+    
+    def calc_매물대_score(self):
+        """현재가 위 매물대 저항 강도"""
+        현재가 = self.data.get('현재가', 0)
+        고점52주 = self.data.get('52주고점', 0)
+        저점52주 = self.data.get('52주저점', 0)
+        
+        if 고점52주 == 0:
+            return 10  # 중립
+        
+        # 현재가에서 52주 고점까지 여유 비율
+        고점여유율 = (고점52주 - 현재가) / 현재가 * 100
+        
+        # 센서뷰:
+        # 현재가 4,250 / 52주 고점 5,140
+        # 여유율 = (5140 - 4250) / 4250 * 100 = 20.9%
+        
+        if 고점여유율 >= 30:
+            return 20    # 매물대 저항 거의 없음
+        elif 고점여유율 >= 20:
+            return 14    # ← 센서뷰 해당 (20.9%)
+        elif 고점여유율 >= 10:
+            return 8
+        elif 고점여유율 >= 5:
+            return 4
+        else:
+            return 1     # 고점 근접, 강한 저항
+    
+    def calc_수급신뢰도(self):
+        """최종 통합 수급신뢰도"""
+        유형 = self.종목유형_판별()
+        
+        if
+user@krx:~$ 이어서
+> ## calc_수급신뢰도 이어서 — 최종 통합본
+
+```python
+    def calc_수급신뢰도(self):
+        """최종 통합 수급신뢰도"""
+        유형 = self.종목유형_판별()
+        
+        if 유형 == 'LARGE':
+            # 대형주: 기관/외국인 중심
+            return self._calc_대형주_수급()
+            
+        elif 유형 == 'MID':
+            # 중형주: 혼합 방식
+            return self._calc_중형주_수급()
+            
+        else:
+            # 소형주 (센서뷰 해당): 대체 지표 중심
+            return self._calc_소형주_수급()
+    
+    def _calc_소형주_수급(self):
+        """
+        소형주 전용 수급 계산
+        기관/외국인 데이터 없을 때 대체 지표 사용
+        """
+        score = 0
+        
+        # ① OBV 스코어 (30점)
+        score += self.calc_OBV_score()
+        
+        # ② 매물대 저항 스코어 (20점)
+        score += self.calc_매물대_score()
+        
+        # ③ 연속 양봉 스코어 (20점)
+        score += self.calc_연속양봉_score()
+        
+        # ④ 호가 잔량 스코어 (15점) - API 연동 시
+        호가비율 = self.data.get('호가잔량비율', None)
+        if 호가비율 is not None:
+            if 호가비율 >= 1.5:
+                score += 15
+            elif 호가비율 >= 1.0:
+                score += 8
+            else:
+                score += 2
+        else:
+            # 호가 데이터 없을 때: OBV로 보완
+            score += 8  # 중립값 부여 (0점 방지)
+        
+        # ⑤ 시간외 거래 스코어 (15점) - API 연동 시
+        시간외강도 = self.data.get('시간외거래강도', None)
+        if 시간외강도 is not None:
+            if 시간외강도 >= 1.3:
+                score += 15
+            elif 시간외강도 >= 1.0:
+                score += 8
+            else:
+                score += 2
+        else:
+            # 시간외 데이터 없을 때: 거래량 이상으로 보완
+            거래량배수 = self.data.get('거래량배수', 1.0)
+            if 거래량배수 >= 2.0:
+                score += 10   # 센서뷰: 2.4배 → 10점
+            elif 거래량배수 >= 1.5:
+                score += 6
+            else:
+                score += 2
+        
+        # 100점 만점 → 10점 만점 변환
+        최종점수 = round(min(score, 100) / 10, 1)
+        return 최종점수
+    
+    def _calc_대형주_수급(self):
+        """대형주: 기관 + 외국인 중심"""
+        score = 0
+        기관 = self.data.get('기관순매수', 0)
+        외국인 = self.data.get('외국인순매수', 0)
+        
+        # 기관 (50점)
+        if 기관 > 500000:
+            score += 50
+        elif 기관 > 100000:
+            score += 35
+        elif 기관 > 0:
+            score += 20
+        elif 기관 > -100000:
+            score += 8
+        else:
+            score += 0
+        
+        # 외국인 (50점)
+        if 외국인 > 500000:
+            score += 50
+        elif 외국인 > 100000:
+            score += 35
+        elif 외국인 > 0:
+            score += 20
+        elif 외국인 > -100000:
+            score += 8
+        else:
+            score += 0
+        
+        return round(min(score, 100) / 10, 1)
+    
+    def _calc_중형주_수급(self):
+        """중형주: 기
+user@krx:~$ 이어서
+> ## _calc_중형주_수급 이어서 — 전체 완성본
+
+```python
+    def _calc_중형주_수급(self):
+        """중형주: 기관 + OBV 혼합"""
+        score = 0
+        기관 = self.data.get('기관순매수', 0)
+        외국인 = self.data.get('외국인순매수', 0)
+        
+        # 기관 (30점)
+        if 기관 > 100000:
+            score += 30
+        elif 기관 > 0:
+            score += 18
+        elif 기관 > -50000:
+            score += 8
+        else:
+            score += 0
+        
+        # 외국인 (20점)
+        if 외국인 > 50000:
+            score += 20
+        elif 외국인 > 0:
+            score += 12
+        else:
+            score += 3
+        
+        # OBV 보완 (30점)
+        score += self.calc_OBV_score() * 0.5
+        
+        # 매물대 (20점)
+        score += self.calc_매물대_score()
+        
+        return round(min(score, 100) / 10, 1)
