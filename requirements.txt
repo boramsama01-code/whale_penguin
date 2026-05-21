@@ -12,3 +12,4 @@ httpx
 sse-starlette
 lxml
 python-multipart
+pydantic

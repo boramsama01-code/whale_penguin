@@ -36,4 +36,4 @@ externalPort = 3000
 
 [nix]
 channel = "stable-25_05"
-packages = ["glibcLocales", "xcodebuild", "zlib"]
+packages = ["glibcLocales", "libxcrypt", "xcodebuild", "zlib"]
