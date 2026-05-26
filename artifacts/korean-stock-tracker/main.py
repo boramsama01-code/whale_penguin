@@ -25,10 +25,12 @@ async def lifespan(app: FastAPI):
     from startup_event import on_startup, on_shutdown
     from kis_auth import token_refresh_loop
     from kis_realtime import start_ws
+    from daily_report import start_scheduler as start_report_scheduler
 
     await on_startup()
     asyncio.create_task(token_refresh_loop())
     asyncio.create_task(start_ws())
+    start_report_scheduler()
     yield
     await on_shutdown()
 
@@ -916,6 +918,19 @@ async def health():
         "timestamp": int(time.time() * 1000),
         "ticker_cache_size": len(ticker_cache),
     }
+
+
+@app.get("/api/daily-report")
+async def daily_report_get():
+    from daily_report import get_daily_report
+    return get_daily_report()
+
+
+@app.post("/api/daily-report/generate")
+async def daily_report_generate():
+    from daily_report import generate_report
+    asyncio.create_task(generate_report(force=True))
+    return {"status": "generating", "message": "리포트 생성을 시작했습니다. 잠시 후 새로고침하세요."}
 
 
 if __name__ == "__main__":

@@ -186,6 +186,7 @@
   #tab-scan.active   { color: #84cc16; border-bottom-color: #84cc16; }
   #tab-analyze.active { color: #a855f7; border-bottom-color: #a855f7; }
   #tab-portfolio.active { color: #ec4899; border-bottom-color: #ec4899; }
+  #tab-report.active { color: #f97316; border-bottom-color: #f97316; }
 
   /* 가독성 개선: 다크 테마 보조 텍스트 밝기 향상 */
   .text-gray-600 { color: #94a3b8 !important; }
@@ -244,6 +245,9 @@
     </button>
     <button class="tab-btn py-2 text-sm font-mono whitespace-nowrap" onclick="switchTab('favorites')" id="tab-favorites">
       <i class="fas fa-star mr-1"></i>즐겨찾기
+    </button>
+    <button class="tab-btn py-2 text-sm font-mono whitespace-nowrap" onclick="switchTab('report')" id="tab-report">
+      <i class="fas fa-file-chart-line mr-1"></i>일일 리포트
     </button>
   </div>
 </header>
@@ -634,6 +638,82 @@
   </div>
 
   <!-- 탭5: 즐겨찾기 -->
+  <!-- 탭: 일일 리포트 -->
+  <div id="tab-content-report" class="tab-content hidden">
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-orange-400 text-sm font-bold"><i class="fas fa-file-chart-line mr-2"></i>고래 추적 일일 리포트</h2>
+        <div class="flex items-center gap-2">
+          <span id="report-generated-at" class="text-xs text-gray-600"></span>
+          <button onclick="triggerReportGenerate()" id="report-generate-btn"
+            class="px-3 py-1.5 bg-orange-900 border border-orange-700 rounded text-xs text-orange-300 hover:bg-orange-800 transition font-mono">
+            <i class="fas fa-bolt mr-1"></i>지금 생성
+          </button>
+        </div>
+      </div>
+      <p class="text-xs text-gray-600 mb-4">매일 <strong class="text-orange-400">15:35 KST</strong> 장 마감 후 자동 생성됩니다. 언제든 수동 생성도 가능합니다.</p>
+
+      <div id="report-loading" class="hidden text-center py-12">
+        <div class="spinner mx-auto mb-3"></div>
+        <p class="text-xs text-gray-500">AI가 오늘의 고래 데이터를 분석하는 중...</p>
+      </div>
+
+      <div id="report-idle" class="text-center py-12 text-gray-600 text-xs">
+        <i class="fas fa-moon text-2xl mb-3 text-gray-700 block"></i>
+        아직 오늘 리포트가 없습니다.<br>
+        장 마감(15:35) 후 자동 생성되거나 <strong class="text-orange-400">지금 생성</strong> 버튼을 눌러주세요.
+      </div>
+
+      <div id="report-error" class="hidden text-center py-8 text-xs text-red-400">
+        <i class="fas fa-exclamation-triangle mr-2"></i><span id="report-error-msg"></span>
+      </div>
+
+      <div id="report-content" class="hidden space-y-4">
+        <!-- 제목 -->
+        <div class="border border-orange-900 rounded-lg p-3 bg-orange-950/20">
+          <h3 id="report-title" class="text-orange-300 font-bold text-sm"></h3>
+        </div>
+        <!-- 시장요약 / 핵심발견 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div class="card p-3">
+            <div class="text-xs text-gray-500 mb-1.5 font-mono"><i class="fas fa-chart-line mr-1 text-cyan-600"></i>시장 요약</div>
+            <p id="report-market" class="text-xs text-gray-300 leading-relaxed"></p>
+          </div>
+          <div class="card p-3">
+            <div class="text-xs text-gray-500 mb-1.5 font-mono"><i class="fas fa-whale mr-1 text-blue-500"></i>핵심 발견</div>
+            <p id="report-discovery" class="text-xs text-gray-300 leading-relaxed"></p>
+          </div>
+        </div>
+        <!-- 주목 종목 -->
+        <div class="card p-3">
+          <div class="text-xs text-gray-500 mb-2 font-mono"><i class="fas fa-crosshairs mr-1 text-red-500"></i>오늘의 주목 종목</div>
+          <div id="report-stocks" class="space-y-2"></div>
+        </div>
+        <!-- 섹터동향 / 내일전망 -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div class="card p-3">
+            <div class="text-xs text-gray-500 mb-1.5 font-mono"><i class="fas fa-layer-group mr-1 text-green-600"></i>섹터 동향</div>
+            <p id="report-sector" class="text-xs text-gray-300 leading-relaxed"></p>
+          </div>
+          <div class="card p-3">
+            <div class="text-xs text-gray-500 mb-1.5 font-mono"><i class="fas fa-binoculars mr-1 text-purple-500"></i>내일 전망</div>
+            <p id="report-tomorrow" class="text-xs text-gray-300 leading-relaxed"></p>
+          </div>
+        </div>
+        <!-- 종합 결론 -->
+        <div class="border border-gray-700 rounded-lg p-3 bg-gray-900">
+          <div class="text-xs text-gray-500 mb-1.5 font-mono"><i class="fas fa-flag-checkered mr-1 text-yellow-500"></i>종합 결론</div>
+          <p id="report-conclusion" class="text-xs text-gray-300 leading-relaxed"></p>
+        </div>
+        <!-- 고래 스냅샷 -->
+        <div class="card p-3">
+          <div class="text-xs text-gray-500 mb-2 font-mono"><i class="fas fa-camera mr-1 text-gray-500"></i>리포트 기준 고래 데이터 스냅샷</div>
+          <div id="report-snapshot" class="space-y-1"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="tab-content-favorites" class="tab-content hidden">
     <div class="card p-4">
       <div class="flex items-center justify-between mb-3">
@@ -1046,6 +1126,119 @@ function switchTab(name) {
   document.getElementById('tab-' + name).classList.add('active');
   state.currentTab = name;
   if (name === 'favorites') renderFavoritesList();
+  if (name === 'report') loadDailyReport();
+}
+
+// ===== DAILY REPORT =====
+let _reportPollTimer = null;
+
+async function loadDailyReport() {
+  try {
+    const res = await fetch(`${BASE}/api/daily-report`);
+    const data = await res.json();
+    renderDailyReport(data);
+    if (data.status === 'generating') {
+      clearTimeout(_reportPollTimer);
+      _reportPollTimer = setTimeout(loadDailyReport, 5000);
+    }
+  } catch (e) {
+    console.error('일일 리포트 로드 실패', e);
+  }
+}
+
+function renderDailyReport(data) {
+  const status = data.status || 'idle';
+  const report = data.report;
+
+  document.getElementById('report-loading').classList.add('hidden');
+  document.getElementById('report-idle').classList.add('hidden');
+  document.getElementById('report-error').classList.add('hidden');
+  document.getElementById('report-content').classList.add('hidden');
+
+  const genAt = data.generated_at;
+  document.getElementById('report-generated-at').textContent = genAt ? `생성: ${genAt} KST` : '';
+
+  if (status === 'generating') {
+    document.getElementById('report-loading').classList.remove('hidden');
+    document.getElementById('report-generate-btn').disabled = true;
+    document.getElementById('report-generate-btn').textContent = '생성 중...';
+    return;
+  }
+
+  document.getElementById('report-generate-btn').disabled = false;
+  document.getElementById('report-generate-btn').innerHTML = '<i class="fas fa-bolt mr-1"></i>지금 생성';
+
+  if (status === 'error') {
+    document.getElementById('report-error').classList.remove('hidden');
+    document.getElementById('report-error-msg').textContent = data.error || '알 수 없는 오류';
+    return;
+  }
+
+  if (status === 'done' && report) {
+    document.getElementById('report-content').classList.remove('hidden');
+
+    document.getElementById('report-title').textContent = report['제목'] || '';
+    document.getElementById('report-market').textContent = report['시장요약'] || '';
+    document.getElementById('report-discovery').textContent = report['핵심발견'] || '';
+    document.getElementById('report-sector').textContent = report['섹터동향'] || '';
+    document.getElementById('report-tomorrow').textContent = report['내일전망'] || '';
+    document.getElementById('report-conclusion').textContent = report['종합결론'] || '';
+
+    const stocks = report['주목종목'] || [];
+    const OPINION_COLOR = { '매수검토': 'text-green-400 border-green-800', '관망': 'text-yellow-400 border-yellow-800', '주의': 'text-red-400 border-red-800' };
+    document.getElementById('report-stocks').innerHTML = stocks.length
+      ? stocks.map(s => {
+          const oc = OPINION_COLOR[s['투자의견']] || 'text-gray-400 border-gray-700';
+          return `<div class="flex items-start gap-3 p-2 rounded bg-gray-900">
+            <div class="shrink-0 pt-0.5">
+              <span class="px-1.5 py-0.5 rounded border text-xs font-mono ${oc}">${s['투자의견'] || ''}</span>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="text-xs font-bold text-white">${s['name'] || ''} <span class="text-gray-600 font-normal">${s['ticker'] || ''}</span></div>
+              <div class="text-xs text-gray-400 mt-0.5">${s['이유'] || ''}</div>
+              <div class="text-xs text-red-500 mt-0.5"><i class="fas fa-exclamation-circle mr-1"></i>${s['리스크'] || ''}</div>
+            </div>
+          </div>`;
+        }).join('')
+      : '<div class="text-xs text-gray-600 py-2">오늘 주목 종목 없음</div>';
+
+    const snapshot = data.whale_snapshot || [];
+    const LEVEL_BADGE = { SMALL: '🟡', MEDIUM: '🟠', LARGE: '🔴', EMERGENCY: '🚨' };
+    document.getElementById('report-snapshot').innerHTML = snapshot.length
+      ? snapshot.map((w, i) => {
+          const badge = LEVEL_BADGE[w.top_level] || '⬜';
+          const amt = w.total_amount ? Math.floor(w.total_amount / 100000000) + '억' : '--';
+          return `<div class="flex items-center justify-between text-xs py-1 border-b border-gray-800 last:border-0">
+            <span class="text-gray-500">${i + 1}.</span>
+            <span class="flex-1 mx-2 text-gray-300">${badge} ${w.name} <span class="text-gray-600">${w.ticker}</span></span>
+            <span class="text-orange-400 font-mono">${amt}</span>
+            <span class="ml-2 text-gray-600">${w.event_count || 0}회</span>
+          </div>`;
+        }).join('')
+      : '<div class="text-xs text-gray-600">스냅샷 없음</div>';
+    return;
+  }
+
+  document.getElementById('report-idle').classList.remove('hidden');
+}
+
+async function triggerReportGenerate() {
+  const btn = document.getElementById('report-generate-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>요청 중...';
+  try {
+    await fetch(`${BASE}/api/daily-report/generate`, { method: 'POST' });
+    document.getElementById('report-loading').classList.remove('hidden');
+    document.getElementById('report-idle').classList.add('hidden');
+    document.getElementById('report-content').classList.add('hidden');
+    document.getElementById('report-error').classList.add('hidden');
+    clearTimeout(_reportPollTimer);
+    _reportPollTimer = setTimeout(loadDailyReport, 5000);
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-bolt mr-1"></i>지금 생성';
+    alert('리포트 생성 요청 실패: ' + e.message);
+  }
 }
 
 // ===== WHALE SUB-TABS =====
