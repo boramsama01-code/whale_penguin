@@ -234,6 +234,9 @@
     <button class="tab-btn active py-2 text-sm font-mono whitespace-nowrap" onclick="switchTab('whale')" id="tab-whale">
       <i class="fas fa-water mr-1"></i>고래 피드
     </button>
+    <button class="tab-btn py-2 text-sm font-mono whitespace-nowrap" onclick="switchTab('report')" id="tab-report">
+      <i class="fas fa-calendar-check mr-1"></i>일일 리포트
+    </button>
     <button class="tab-btn py-2 text-sm font-mono whitespace-nowrap" onclick="switchTab('scan')" id="tab-scan">
       <i class="fas fa-radar mr-1"></i>세력 스캐너
     </button>
@@ -245,9 +248,6 @@
     </button>
     <button class="tab-btn py-2 text-sm font-mono whitespace-nowrap" onclick="switchTab('favorites')" id="tab-favorites">
       <i class="fas fa-star mr-1"></i>즐겨찾기
-    </button>
-    <button class="tab-btn py-2 text-sm font-mono whitespace-nowrap" onclick="switchTab('report')" id="tab-report">
-      <i class="fas fa-file-chart-line mr-1"></i>일일 리포트
     </button>
   </div>
 </header>
@@ -642,7 +642,7 @@
   <div id="tab-content-report" class="tab-content hidden">
     <div class="card p-4">
       <div class="flex items-center justify-between mb-4">
-        <h2 class="text-orange-400 text-sm font-bold"><i class="fas fa-file-chart-line mr-2"></i>고래 추적 일일 리포트</h2>
+        <h2 class="text-orange-400 text-sm font-bold"><i class="fas fa-calendar-check mr-2"></i>고래 추적 일일 리포트</h2>
         <div class="flex items-center gap-2">
           <span id="report-generated-at" class="text-xs text-gray-600"></span>
           <button onclick="triggerReportGenerate()" id="report-generate-btn"
@@ -680,7 +680,7 @@
             <p id="report-market" class="text-xs text-gray-300 leading-relaxed"></p>
           </div>
           <div class="card p-3">
-            <div class="text-xs text-gray-500 mb-1.5 font-mono"><i class="fas fa-whale mr-1 text-blue-500"></i>핵심 발견</div>
+            <div class="text-xs text-gray-500 mb-1.5 font-mono"><i class="fas fa-fish mr-1 text-blue-500"></i>핵심 발견</div>
             <p id="report-discovery" class="text-xs text-gray-300 leading-relaxed"></p>
           </div>
         </div>
@@ -1739,6 +1739,11 @@ async function doAnalyze(ticker) {
   document.getElementById('analyze-result').classList.add('hidden');
   const loadingMsg = document.querySelector('#analyze-loading p');
   if (loadingMsg) loadingMsg.textContent = 'AI 세력 분석 시작 중...';
+  // 이전 분석 결과 초기화 (오래된 에러 표시 방지)
+  ['ai-longpattern','ai-reason','ai-acc-price','ai-target-price','ai-risks','ai-forecast'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = '--';
+  });
 
   return new Promise((resolve) => {
     let es = null;
