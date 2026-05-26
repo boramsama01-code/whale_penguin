@@ -24,13 +24,13 @@ args = "Start application"
 name = "Start application"
 author = "agent"
 
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd artifacts/korean-stock-tracker && uvicorn main:app --host 0.0.0.0 --port 8080 --reload"
-waitForPort = 8080
-
 [workflows.workflow.metadata]
 outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd artifacts/korean-stock-tracker && KIS_APP_KEY=$KIS_Developers_app_key KIS_APP_SECRET=$KIS_Developers_app_secret DART_API_KEY=$OPEN_DART uvicorn main:app --host 0.0.0.0 --port 8080 --reload"
+waitForPort = 8080
 
 [agent]
 stack = "PNPM_WORKSPACE"
