@@ -24,8 +24,8 @@ async def _kis_get(path: str, params: dict, tr_id: str) -> Optional[dict]:
         from kis_auth import get_access_token, KIS_BASE_URL
         import httpx
         token = await get_access_token()
-        app_key = os.getenv("KIS_APP_KEY", "")
-        app_secret = os.getenv("KIS_APP_SECRET", "")
+        app_key = os.getenv("KIS_APP_KEY") or os.getenv("KIS_Developers_app_key", "")
+        app_secret = os.getenv("KIS_APP_SECRET") or os.getenv("KIS_Developers_app_secret", "")
         if not app_key or not app_secret:
             return None
         headers = {
@@ -48,68 +48,84 @@ async def _kis_get(path: str, params: dict, tr_id: str) -> Optional[dict]:
         return None
 
 
+async def _fetch_ohlcv_range(ticker: str, start: str, end: str) -> list[dict]:
+    """단일 날짜 범위의 OHLCV 조회 (최대 ~100건)."""
+    data = await _kis_get(
+        "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+        params={
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": ticker,
+            "FID_INPUT_DATE_1": start,
+            "FID_INPUT_DATE_2": end,
+            "FID_PERIOD_DIV_CODE": "D",
+            "FID_ORG_ADJ_PRC": "0",
+        },
+        tr_id="FHKST03010100",
+    )
+
+    if not data or data.get("rt_cd") != "0":
+        return []
+
+    rows = []
+    for item in (data.get("output2") or []):
+        try:
+            date_str = item.get("stck_bsop_date", "")
+            if not date_str or len(date_str) != 8:
+                continue
+            close = float(item.get("stck_clpr", 0) or 0)
+            if close <= 0:
+                continue
+            rows.append({
+                "date": pd.to_datetime(date_str, format="%Y%m%d"),
+                "시가": float(item.get("stck_oprc", 0) or 0),
+                "고가": float(item.get("stck_hgpr", 0) or 0),
+                "저가": float(item.get("stck_lwpr", 0) or 0),
+                "종가": close,
+                "거래량": float(item.get("acml_vol", 0) or 0),
+                "거래대금": float(item.get("acml_tr_pbmn", 0) or 0),
+            })
+        except Exception:
+            continue
+    return rows
+
+
 async def get_ohlcv_kis(ticker: str, days: int = 252) -> Optional[pd.DataFrame]:
     """
-    KIS API로 일별 OHLCV 조회.
+    KIS API로 일별 OHLCV 조회 — 90일 단위 페이지네이션으로 최대 1년 데이터 수집.
     columns: 시가, 고가, 저가, 종가, 거래량, 거래대금
     """
     ticker = str(ticker).zfill(6)
     now = _now_kst()
-    end = now.strftime("%Y%m%d")
-    start = (now - timedelta(days=days + 60)).strftime("%Y%m%d")
 
-    try:
-        data = await _kis_get(
-            "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
-            params={
-                "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_INPUT_ISCD": ticker,
-                "FID_INPUT_DATE_1": start,
-                "FID_INPUT_DATE_2": end,
-                "FID_PERIOD_DIV_CODE": "D",
-                "FID_ORG_ADJ_PRC": "0",
-            },
-            tr_id="FHKST03010100",
-        )
+    # 90일 단위로 분할 요청 (KIS API 응답 한계 극복)
+    chunk_days = 90
+    num_chunks = (days + chunk_days - 1) // chunk_days  # 올림 나누기
+    num_chunks = min(num_chunks, 5)  # 최대 5회 요청 (450일)
 
-        if not data or data.get("rt_cd") != "0":
-            logger.debug("KIS OHLCV 응답 오류 %s: %s", ticker, data.get("msg1") if data else "no data")
-            return None
+    all_rows: list[dict] = []
+    tasks = []
+    for i in range(num_chunks):
+        end_dt = now - timedelta(days=i * chunk_days)
+        start_dt = end_dt - timedelta(days=chunk_days + 10)
+        tasks.append(_fetch_ohlcv_range(
+            ticker,
+            start_dt.strftime("%Y%m%d"),
+            end_dt.strftime("%Y%m%d"),
+        ))
 
-        output2 = data.get("output2", [])
-        if not output2:
-            return None
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for r in results:
+        if isinstance(r, list):
+            all_rows.extend(r)
 
-        rows = []
-        for item in output2:
-            try:
-                date_str = item.get("stck_bsop_date", "")
-                if not date_str or len(date_str) != 8:
-                    continue
-                close = float(item.get("stck_clpr", 0) or 0)
-                if close <= 0:
-                    continue
-                rows.append({
-                    "date": pd.to_datetime(date_str, format="%Y%m%d"),
-                    "시가": float(item.get("stck_oprc", 0) or 0),
-                    "고가": float(item.get("stck_hgpr", 0) or 0),
-                    "저가": float(item.get("stck_lwpr", 0) or 0),
-                    "종가": close,
-                    "거래량": float(item.get("acml_vol", 0) or 0),
-                    "거래대금": float(item.get("acml_tr_pbmn", 0) or 0),
-                })
-            except Exception:
-                continue
-
-        if not rows:
-            return None
-
-        df = pd.DataFrame(rows).set_index("date").sort_index()
-        return df.tail(days)
-
-    except Exception as e:
-        logger.debug("KIS OHLCV 오류 %s: %s", ticker, e)
+    if not all_rows:
+        logger.debug("KIS OHLCV 데이터 없음: %s", ticker)
         return None
+
+    df = pd.DataFrame(all_rows).set_index("date")
+    df = df[~df.index.duplicated(keep="last")]
+    df = df.sort_index()
+    return df.tail(days)
 
 
 async def get_current_price_kis(ticker: str) -> Optional[dict]:
@@ -169,7 +185,6 @@ async def get_index_kis(index_code: str = "0001") -> Optional[dict]:
         if data:
             rt = data.get("rt_cd", "")
             o = data.get("output", {})
-            # 가능한 모든 필드명 시도 (KIS API 버전에 따라 다름)
             idx_val = float(
                 o.get("bstp_nmix_prpr") or
                 o.get("bstp_nmix_prdy_vrss") or
@@ -183,30 +198,10 @@ async def get_index_kis(index_code: str = "0001") -> Optional[dict]:
                     0
                 )
                 return {"index": idx_val, "change_rate": change_rate}
-            # HTTP 200이지만 파싱 실패 — 전체 응답 키 로그
             logger.info("KIS 지수 API 파싱 실패 %s: rt_cd=%s, output_keys=%s, msg=%s",
                         index_code, rt, list(o.keys())[:15], data.get("msg1", ""))
     except Exception as e:
         logger.info("KIS 지수 API 예외 %s: %s", index_code, e)
-
-    # 2차 fallback: 대표 ETF 현재가로 지수 추정
-    # KODEX 200(069500) NAV ≈ KOSPI / 100.0 (누적 스플릿 감안 약 100배)
-    # KODEX KOSDAQ150(229200) NAV ≈ KOSDAQ / 10.0 (약 10배)
-    etf_map = {"0001": ("069500", 100.0), "1001": ("229200", 10.0)}
-    etf_ticker, scale = etf_map.get(index_code, (None, 1.0))
-    if etf_ticker:
-        try:
-            info = await get_current_price_kis(etf_ticker)
-            if info and info.get("price", 0) > 0:
-                estimated = round(info["price"] * scale, 2)
-                logger.info("KIS 지수 ETF fallback %s → %.2f (ETF×%.0f)", index_code, estimated, scale)
-                return {
-                    "index": estimated,
-                    "change_rate": info.get("change_rate", 0),
-                    "estimated": True,
-                }
-        except Exception as e:
-            logger.debug("KIS 지수 ETF fallback 실패 %s: %s", index_code, e)
 
     return None
 

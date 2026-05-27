@@ -51,11 +51,21 @@ def get_daily_report() -> dict:
 
 async def generate_report(force: bool = False) -> dict:
     today = datetime.now(KST).strftime("%Y-%m-%d")
+    now = datetime.now(KST)
 
     if not force and _store.get("date") == today and _store.get("status") == "done":
         return dict(_store)
 
     if _store.get("status") == "generating":
+        return dict(_store)
+
+    # 장중(09:00~15:30) 자동 생성 방지 — force=True(수동)면 허용하되 경고 표시
+    is_market_hours = (
+        now.weekday() < 5
+        and (9, 0) <= (now.hour, now.minute) <= (15, 30)
+    )
+    if is_market_hours and not force:
+        logger.info("장중(%s) — 일일 리포트 자동 생성 건너뜀 (장 마감 후 자동 생성)", now.strftime("%H:%M"))
         return dict(_store)
 
     _store["status"] = "generating"

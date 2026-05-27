@@ -31,8 +31,8 @@ async def get_access_token(force_refresh: bool = False) -> str:
         ):
             return _token_cache["access_token"]
 
-        app_key = os.getenv("KIS_APP_KEY", "")
-        app_secret = os.getenv("KIS_APP_SECRET", "")
+        app_key = os.getenv("KIS_APP_KEY") or os.getenv("KIS_Developers_app_key", "")
+        app_secret = os.getenv("KIS_APP_SECRET") or os.getenv("KIS_Developers_app_secret", "")
 
         if not app_key or not app_secret:
             raise RuntimeError("KIS_APP_KEY 또는 KIS_APP_SECRET 환경변수가 없습니다.")
@@ -76,8 +76,8 @@ async def get_approval_key() -> str:
     if _token_cache.get("approval_key"):
         return _token_cache["approval_key"]
 
-    app_key = os.getenv("KIS_APP_KEY", "")
-    app_secret = os.getenv("KIS_APP_SECRET", "")
+    app_key = os.getenv("KIS_APP_KEY") or os.getenv("KIS_Developers_app_key", "")
+    app_secret = os.getenv("KIS_APP_SECRET") or os.getenv("KIS_Developers_app_secret", "")
 
     payload = {
         "grant_type": "client_credentials",
@@ -110,8 +110,8 @@ async def get_approval_key() -> str:
 
 async def kis_get(path: str, params: dict, retry: bool = True) -> dict:
     token = await get_access_token()
-    app_key = os.getenv("KIS_APP_KEY", "")
-    app_secret = os.getenv("KIS_APP_SECRET", "")
+    app_key = os.getenv("KIS_APP_KEY") or os.getenv("KIS_Developers_app_key", "")
+    app_secret = os.getenv("KIS_APP_SECRET") or os.getenv("KIS_Developers_app_secret", "")
 
     headers = {
         "Content-Type": "application/json",

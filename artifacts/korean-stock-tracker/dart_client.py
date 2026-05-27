@@ -56,7 +56,7 @@ async def load_corp_codes():
 
 async def _fetch_corp_codes():
     global _corp_code_cache, _ticker_name_cache
-    api_key = os.getenv("DART_API_KEY", "")
+    api_key = os.getenv("DART_API_KEY") or os.getenv("OPEN_DART", "")
     if not api_key:
         logger.warning("DART_API_KEY 없음 — corp codes 미로드")
         return
@@ -121,7 +121,7 @@ async def get_disclosures(ticker: str, limit: int = 10) -> list[dict]:
         logger.warning("ticker %s의 corp_code 없음", ticker)
         return []
 
-    api_key = os.getenv("DART_API_KEY", "")
+    api_key = os.getenv("DART_API_KEY") or os.getenv("OPEN_DART", "")
     if not api_key:
         return []
 

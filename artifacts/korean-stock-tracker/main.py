@@ -262,6 +262,7 @@ async def analyze_ticker(ticker: str):
         # 채팅 컨텍스트용 캐시 저장
         store_analysis_cache(ticker, detail, ai_result, disclosures)
 
+        _ai_tgt = ai_result.get("목표가격대") if ai_result else None
         strategy = generate_strategy(
             ticker=ticker,
             name=detail["name"],
@@ -269,6 +270,7 @@ async def analyze_ticker(ticker: str):
             score=detail["score"].get("total", 0),
             high52=detail["high52"],
             low52=detail["low52"],
+            ai_targets=_ai_tgt,
         )
 
         return {
@@ -523,6 +525,7 @@ async def analyze_ticker_stream(ticker: str, request: Request):
 
             store_analysis_cache(ticker, detail, ai_result, disclosures)
 
+            _ai_tgt2 = ai_result.get("목표가격대") if ai_result else None
             strategy = generate_strategy(
                 ticker=ticker,
                 name=detail["name"],
@@ -530,6 +533,7 @@ async def analyze_ticker_stream(ticker: str, request: Request):
                 score=detail["score"].get("total", 0),
                 high52=detail["high52"],
                 low52=detail["low52"],
+                ai_targets=_ai_tgt2,
             )
 
             payload = {
