@@ -259,3 +259,32 @@ async def get_volume_rank_kis(market: str = "J", top_n: int = 100) -> list[dict]
     except Exception as e:
         logger.debug("KIS 거래량 순위 오류: %s", e)
         return []
+
+
+async def get_index_naver(symbol: str = "KOSPI") -> Optional[dict]:
+    """네이버 금융 모바일 API로 지수 조회 (KIS 대체)."""
+    try:
+        import httpx
+        url = f"https://m.stock.naver.com/api/index/{symbol}/basic"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; KRX-Tracker/1.0)"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        def _f(key: str) -> float:
+            try:
+                return float(str(data.get(key, "0")).replace(",", ""))
+            except Exception:
+                return 0.0
+        idx = _f("closePrice")
+        rate = _f("fluctuationsRatio")
+        chg = _f("compareToPreviousClosePrice")
+        if idx > 0:
+            logger.info("네이버 지수 조회 성공 %s: %.2f (%.2f%%)", symbol, idx, rate)
+            return {"index": idx, "change_rate": rate, "change": chg}
+        return None
+    except Exception as e:
+        logger.debug("네이버 지수 조회 실패 %s: %s", symbol, e)
+        return None

@@ -107,16 +107,49 @@ def score_price_volume_divergence(ohlcv: pd.DataFrame) -> tuple[float, str]:
         vol_col = _get_col(ohlcv, "거래량", "Volume")
         closes = ohlcv[close_col].values.astype(float)
         vols = ohlcv[vol_col].values.astype(float)
-        if len(closes) < 5:
+        if len(closes) < 10:
             return 0.0, "데이터 부족"
-        price_change = (closes[-1] - closes[-5]) / closes[-5] * 100
-        vol_change = (np.mean(vols[-3:]) - np.mean(vols[-8:-3])) / (np.mean(vols[-8:-3]) + 1) * 100
-        if price_change < 2 and vol_change > 50:
-            return 8.0, f"횡보 중 거래량 급증 (가격변화 {price_change:.1f}%, 거래량 {vol_change:.1f}%)"
-        elif price_change > 0 and vol_change > 30:
-            return 5.0, f"가격-거래량 동반 상승 ({price_change:.1f}%, {vol_change:.1f}%)"
+
+        # 5거래일 가격 변화율
+        price_change_5d = (closes[-1] - closes[-5]) / (closes[-5] + 1) * 100
+
+        # 거래량 기준: 최근 3일 평균 vs 20일(또는 가용) 기준선
+        baseline_len = min(len(vols) - 3, 20)
+        recent_vol = np.mean(vols[-3:])
+        if baseline_len > 0:
+            baseline_vol = np.mean(vols[-(baseline_len + 3):-3])
         else:
-            return 0.0, f"패턴 미감지 (가격 {price_change:.1f}%, 거래량 {vol_change:.1f}%)"
+            baseline_vol = np.mean(vols[:-3]) if len(vols) > 3 else 1.0
+        if baseline_vol <= 0:
+            baseline_vol = 1.0
+        vol_ratio = recent_vol / baseline_vol  # 기준선 대비 몇 배
+
+        # 거래량 단기 추세 (최근 5일 선형 기울기)
+        vol_trend_up = False
+        if len(vols) >= 8:
+            x = np.arange(5, dtype=float)
+            coef = np.polyfit(x, vols[-5:], 1)
+            vol_trend_up = bool(coef[0] > 0)
+
+        # 패턴 1: 횡보 + 거래량 급증 (가장 강한 매집 신호) — 최대 8점
+        if abs(price_change_5d) <= 3.0 and vol_ratio >= 1.5:
+            score = min(8.0, 5.0 + (vol_ratio - 1.5) * 2.0)
+            return round(score, 1), f"횡보 중 거래량 급증 (가격변화 {price_change_5d:+.1f}%, 거래량 기준선 대비 {vol_ratio:.1f}배)"
+
+        # 패턴 2: 가격-거래량 동반 상승 (돌파 신호) — 최대 6점
+        if price_change_5d > 0.5 and vol_ratio >= 1.3:
+            score = min(6.0, 3.0 + (vol_ratio - 1.0) * 1.5)
+            return round(score, 1), f"가격-거래량 동반 상승 ({price_change_5d:+.1f}%, 거래량 {vol_ratio:.1f}배)"
+
+        # 패턴 3: 거래량 추세 상승 (점진 매집) — 3점
+        if vol_trend_up and vol_ratio >= 1.15:
+            return 3.0, f"거래량 상승 추세 형성 (5일 기울기 상향, 기준선 {vol_ratio:.1f}배)"
+
+        # 패턴 4: 거래량 소폭 상회 — 1.5점
+        if vol_ratio >= 1.2:
+            return 1.5, f"거래량 기준선 상회 ({vol_ratio:.1f}배, 가격 {price_change_5d:+.1f}%)"
+
+        return 0.0, f"정상 거래량 (기준선 {vol_ratio:.1f}배, 가격 {price_change_5d:+.1f}%)"
     except Exception as e:
         return 0.0, f"오류: {e}"
 

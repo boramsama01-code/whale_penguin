@@ -134,6 +134,13 @@ async def init_market_state():
 async def on_startup():
     logger.info("앱 시작 이벤트 실행 중...")
 
+    # 사용자 인증 DB 초기화
+    try:
+        from user_store import init_db
+        init_db()
+    except Exception as e:
+        logger.warning("user_store 초기화 실패: %s", e)
+
     # 즉시: fallback + 디스크 캐시 로딩
     ticker_cache.update(_FALLBACK)
     _load_from_disk()

@@ -414,12 +414,16 @@ async def stream_chat_with_analyst(
         client = _get_anthropic_client()
         async with client.messages.stream(
             model=MODEL,
-            max_tokens=1200,
+            max_tokens=3000,
             system=system,
             messages=messages,
         ) as stream:
             async for text in stream.text_stream:
                 yield text
+            # 응답 완료 후 stop_reason 확인
+            final = await stream.get_final_message()
+            if final.stop_reason == "max_tokens":
+                yield "\n\n__TRUNCATED__"
     except asyncio.TimeoutError:
         yield "\n[AI 응답 타임아웃이 발생했습니다. 다시 시도해 주세요.]"
     except Exception as e:

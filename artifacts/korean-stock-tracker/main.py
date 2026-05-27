@@ -271,6 +271,7 @@ async def analyze_ticker(ticker: str):
             high52=detail["high52"],
             low52=detail["low52"],
             ai_targets=_ai_tgt,
+            ai_analysis=ai_result,
         )
 
         return {
@@ -534,6 +535,7 @@ async def analyze_ticker_stream(ticker: str, request: Request):
                 high52=detail["high52"],
                 low52=detail["low52"],
                 ai_targets=_ai_tgt2,
+                ai_analysis=ai_result,
             )
 
             payload = {
@@ -935,6 +937,173 @@ async def daily_report_generate():
     from daily_report import generate_report
     asyncio.create_task(generate_report(force=True))
     return {"status": "generating", "message": "리포트 생성을 시작했습니다. 잠시 후 새로고침하세요."}
+
+
+# ── 인증 / 사용자 데이터 API ─────────────────────────────────────────────────
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    display_name: Optional[str] = ""
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class PortfolioSaveRequest(BaseModel):
+    portfolio: list
+
+class WatchlistSaveRequest(BaseModel):
+    watchlist: list
+
+
+def _get_auth_user(request: Request) -> Optional[dict]:
+    token = request.headers.get("X-Auth-Token") or request.cookies.get("krx_auth_token")
+    if not token:
+        return None
+    from user_store import get_user_by_token
+    return get_user_by_token(token)
+
+
+@app.post("/api/auth/register")
+async def auth_register(body: RegisterRequest):
+    from user_store import register_user
+    if len(body.username.strip()) < 3:
+        raise HTTPException(status_code=400, detail="아이디는 3자 이상이어야 합니다")
+    if len(body.password) < 6:
+        raise HTTPException(status_code=400, detail="비밀번호는 6자 이상이어야 합니다")
+    user = register_user(body.username, body.password, body.display_name)
+    if not user:
+        raise HTTPException(status_code=409, detail="이미 사용 중인 아이디입니다")
+    from user_store import login_user
+    session = login_user(body.username, body.password)
+    return {"ok": True, "token": session["token"], "user": {
+        "id": user["id"], "username": user["username"], "display_name": user["display_name"]
+    }}
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: LoginRequest):
+    from user_store import login_user
+    session = login_user(body.username, body.password)
+    if not session:
+        raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다")
+    return {"ok": True, "token": session["token"], "user": {
+        "id": session["id"], "username": session["username"], "display_name": session["display_name"]
+    }}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    token = request.headers.get("X-Auth-Token") or request.cookies.get("krx_auth_token")
+    if token:
+        from user_store import logout_token
+        logout_token(token)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    user = _get_auth_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="인증 필요")
+    from user_store import get_user_data
+    data = get_user_data(user["id"])
+    return {"user": user, "portfolio": data["portfolio"], "watchlist": data["watchlist"]}
+
+
+@app.get("/api/user/data")
+async def user_data_get(request: Request):
+    user = _get_auth_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="로그인 필요")
+    from user_store import get_user_data
+    data = get_user_data(user["id"])
+    return data
+
+
+@app.post("/api/user/portfolio")
+async def user_portfolio_save(request: Request, body: PortfolioSaveRequest):
+    user = _get_auth_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="로그인 필요")
+    from user_store import save_portfolio
+    save_portfolio(user["id"], body.portfolio)
+    return {"ok": True}
+
+
+@app.post("/api/user/watchlist")
+async def user_watchlist_save(request: Request, body: WatchlistSaveRequest):
+    user = _get_auth_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="로그인 필요")
+    from user_store import save_watchlist
+    save_watchlist(user["id"], body.watchlist)
+    return {"ok": True}
+
+
+@app.get("/api/user/portfolio/advice")
+async def portfolio_advice(request: Request):
+    """포트폴리오 각 보유주에 대한 AI 퀀트 조언 반환."""
+    user = _get_auth_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="로그인 필요")
+    from user_store import get_user_data
+    from claude_analyst import _analysis_cache
+    data = get_user_data(user["id"])
+    portfolio = data.get("portfolio", [])
+    advice_list = []
+    for item in portfolio:
+        ticker = str(item.get("ticker", "")).zfill(6)
+        buy_price = float(item.get("buy_price", 0) or 0)
+        qty = int(item.get("qty", 0) or 0)
+        cached = _analysis_cache.get(ticker)
+        if not cached or buy_price <= 0:
+            advice_list.append({**item, "advice": None})
+            continue
+        cur_price = cached.get("price", buy_price)
+        score = cached.get("score", {}).get("total", 0)
+        ai = cached.get("ai_analysis", {}) or {}
+        tgt = ai.get("목표가격대", {}) or {}
+        acc = ai.get("매집가격대", {}) or {}
+        stage = ai.get("세력단계", "")
+        pnl_pct = (cur_price - buy_price) / buy_price * 100 if buy_price > 0 else 0
+        stop_dist = 0.07  # default 7% stop
+        t1 = tgt.get("단기")
+        t2 = tgt.get("중기")
+        # Recommendation logic
+        if pnl_pct <= -stop_dist * 100:
+            action = "손절"
+            reason = f"매수가({buy_price:,.0f}원) 대비 {pnl_pct:.1f}% 하락. 손절 기준({stop_dist*100:.0f}%) 이탈. 추가 손실 방지를 위한 정리 권장."
+            color = "red"
+        elif score >= 7 and pnl_pct > -3 and stage in ["매집중기", "매집완료", "매집초기"]:
+            action = "추가매수"
+            reason = f"세력점수 {score:.1f}/10, {stage} 단계. 현재가({cur_price:,.0f}원)가 매수가({buy_price:,.0f}원) 대비 {pnl_pct:+.1f}%. 분할 추가 매수 고려."
+            color = "green"
+        elif t1 and cur_price >= float(t1) * 0.97:
+            action = "익절 고려"
+            reason = f"목표가1({float(t1):,.0f}원)에 근접. 일부 익절 후 나머지 보유 전략 권장. (현재 {pnl_pct:+.1f}%)"
+            color = "yellow"
+        elif pnl_pct < -3 and score < 5:
+            action = "비중 축소"
+            reason = f"세력점수 {score:.1f}/10 하락 + {pnl_pct:.1f}% 손실. 세력 이탈 가능성. 비중 줄이고 재진입 모니터링 권장."
+            color = "orange"
+        else:
+            action = "보유"
+            reason = f"현재 {pnl_pct:+.1f}%. 세력점수 {score:.1f}/10 ({stage or '관망'} 단계). {'단기목표 ' + str(int(float(t1))) + '원 목표 유지.' if t1 else '추세 모니터링 중.'}"
+            color = "gray"
+        advice_list.append({
+            **item,
+            "cur_price": cur_price,
+            "pnl_pct": round(pnl_pct, 2),
+            "pnl_amount": round((cur_price - buy_price) * qty, 0),
+            "score": score,
+            "stage": stage,
+            "target1": t1,
+            "target2": t2,
+            "advice": {"action": action, "reason": reason, "color": color},
+        })
+    return {"advice": advice_list}
 
 
 if __name__ == "__main__":
